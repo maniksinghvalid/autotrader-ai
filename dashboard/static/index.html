@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AutoTrader · Operations Dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel-2: #1c2230; --border: #2a3240;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --red: #f85149; --amber: #d29922;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 14px;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 14px 20px; background: var(--panel); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  .env-badge {
+    font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
+    text-transform: uppercase; letter-spacing: .5px;
+  }
+  .env-paper { background: rgba(63,185,80,.15); color: var(--green); border: 1px solid rgba(63,185,80,.4); }
+  .env-live  { background: rgba(248,81,73,.15); color: var(--red); border: 1px solid rgba(248,81,73,.5); }
+  .spacer { flex: 1; }
+  select, button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-size: 13px; cursor: pointer;
+  }
+  button:hover, select:hover { border-color: var(--accent); }
+  .status-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .dot-ok { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot-bad { background: var(--red); box-shadow: 0 0 6px var(--red); }
+  .dot-wait { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+  .conn { font-size: 12px; color: var(--muted); display: flex; align-items: center; }
+  main { padding: 18px 20px 40px; max-width: 1200px; margin: 0 auto; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .kpi { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .kpi .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .kpi .value { font-size: 22px; font-weight: 650; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .kpi .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 18px; overflow: hidden; }
+  .panel h2 { font-size: 13px; margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--border);
+    font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .panel h2 .count { font-size: 11px; color: var(--muted); font-weight: 500; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 9px 16px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; font-weight: 600; }
+  td.sym, th.sym { text-align: left; font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--panel-2); }
+  .pos { color: var(--green); } .neg { color: var(--red); }
+  .empty { padding: 18px 16px; color: var(--muted); font-style: italic; }
+  .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
+  .pill-open { background: rgba(210,153,34,.16); color: var(--amber); }
+  .pill-filled { background: rgba(63,185,80,.16); color: var(--green); }
+  .pill-cancelled, .pill-rejected, .pill-failed { background: rgba(248,81,73,.16); color: var(--red); }
+  .pill-other { background: rgba(139,148,158,.16); color: var(--muted); }
+  .err { background: rgba(248,81,73,.1); border: 1px solid rgba(248,81,73,.4); color: #ffb4ad;
+    padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; font-size: 13px; }
+  .banner { padding: 10px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; }
+  .banner-wait { background: rgba(210,153,34,.12); border: 1px solid rgba(210,153,34,.4); color: var(--amber); }
+  footer { text-align: center; color: var(--muted); font-size: 11px; padding: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AutoTrader</h1>
+  <span id="envBadge" class="env-badge env-paper">paper</span>
+  <select id="accountSelect" title="Account"><option>Loading…</option></select>
+  <div class="spacer"></div>
+  <span class="conn"><span id="connDot" class="status-dot dot-wait"></span><span id="connText">connecting…</span></span>
+  <button id="refreshBtn" title="Refresh now">↻ Refresh</button>
+</header>
+
+<main>
+  <div id="topError"></div>
+  <div id="readyBanner"></div>
+
+  <section class="kpis" id="kpis"></section>
+
+  <div class="panel">
+    <h2>Positions <span id="posCount" class="count"></span></h2>
+    <div id="positionsWrap"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Open Orders <span id="openCount" class="count"></span></h2>
+    <div id="openOrdersWrap"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Today's Fills <span id="fillCount" class="count"></span></h2>
+    <div id="fillsWrap"></div>
+  </div>
+
+  <footer>
+    Read-only view · paper trading by default · last updated <span id="lastUpdated">—</span>
+  </footer>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  let refreshSeconds = 30;
+  let timer = null;
+  let currentAcc = null;   // {acc_id, market}
+  let accountsLoaded = false;
+
+  const $ = (id) => document.getElementById(id);
+
+  function fmtMoney(v) {
+    if (v === null || v === undefined || isNaN(v)) return "—";
+    return Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  function fmtNum(v, d = 0) {
+    if (v === null || v === undefined || isNaN(v)) return "—";
+    return Number(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+  }
+  function signClass(v) { return Number(v) > 0 ? "pos" : (Number(v) < 0 ? "neg" : ""); }
+  function signed(v) { const n = Number(v) || 0; return (n > 0 ? "+" : "") + fmtMoney(n); }
+
+  function statusPill(status) {
+    const s = String(status || "").toUpperCase();
+    let cls = "pill-other";
+    if (["SUBMITTED", "SUBMITTING", "WAITING_SUBMIT", "FILLED_PART", "WAITING"].includes(s)) cls = "pill-open";
+    else if (s.includes("FILLED_ALL") || s === "FILLED") cls = "pill-filled";
+    else if (s.includes("CANCEL")) cls = "pill-cancelled";
+    else if (s.includes("REJECT") || s.includes("FAIL")) cls = "pill-rejected";
+    return `<span class="pill ${cls}">${s || "—"}</span>`;
+  }
+
+  function setConn(state, text) {
+    const dot = $("connDot");
+    dot.className = "status-dot " + (state === "ok" ? "dot-ok" : state === "bad" ? "dot-bad" : "dot-wait");
+    $("connText").textContent = text;
+  }
+
+  async function fetchJSON(url) {
+    const r = await fetch(url, { cache: "no-store" });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const msg = body.detail || body.error || (`HTTP ${r.status}`);
+      const e = new Error(msg); e.status = r.status; e.body = body;
+      throw e;
+    }
+    return body;
+  }
+
+  function renderKPIs(funds) {
+    const f = funds || {};
+    const ccy = f.currency && f.currency !== "N/A" ? f.currency : "";
+    const cards = [
+      { label: "Total Assets", value: fmtMoney(f.total_assets), sub: ccy },
+      { label: "Cash", value: fmtMoney(f.cash), sub: "Frozen " + fmtMoney(f.frozen_cash) },
+      { label: "Buying Power", value: fmtMoney(f.power), sub: "Available " + fmtMoney(f.available_funds) },
+      { label: "Position Value", value: fmtMoney(f.market_val), sub: ccy },
+    ];
+    $("kpis").innerHTML = cards.map(c =>
+      `<div class="kpi"><div class="label">${c.label}</div>
+       <div class="value">${c.value}</div><div class="sub">${c.sub || "&nbsp;"}</div></div>`
+    ).join("");
+  }
+
+  function renderPositions(positions) {
+    $("posCount").textContent = positions.length ? `(${positions.length})` : "";
+    if (!positions.length) { $("positionsWrap").innerHTML = `<div class="empty">No open positions.</div>`; return; }
+    const rows = positions.map(p => {
+      const pl = Number(p.unrealized_pl) || 0;
+      const plr = Number(p.pl_ratio_avg_cost) || 0;
+      return `<tr>
+        <td class="sym">${p.code || ""}</td>
+        <td class="sym" style="color:var(--muted)">${p.name || ""}</td>
+        <td>${fmtNum(p.qty)}</td>
+        <td>${fmtMoney(p.average_cost)}</td>
+        <td>${fmtMoney(p.nominal_price)}</td>
+        <td>${fmtMoney(p.market_val)}</td>
+        <td class="${signClass(pl)}">${signed(pl)}</td>
+        <td class="${signClass(plr)}">${plr > 0 ? "+" : ""}${fmtNum(plr, 2)}%</td>
+      </tr>`;
+    }).join("");
+    $("positionsWrap").innerHTML =
+      `<table><thead><tr>
+        <th class="sym">Code</th><th class="sym">Name</th><th>Qty</th>
+        <th>Avg Cost</th><th>Last</th><th>Mkt Value</th><th>Unrl P/L</th><th>P/L %</th>
+      </tr></thead><tbody>${rows}</tbody></table>`;
+  }
+
+  function renderOrders(orders) {
+    $("openCount").textContent = orders.length ? `(${orders.length})` : "";
+    if (!orders.length) { $("openOrdersWrap").innerHTML = `<div class="empty">No open orders.</div>`; return; }
+    const rows = orders.map(o => `<tr>
+        <td class="sym">${o.code || ""}</td>
+        <td class="sym">${o.side || ""}</td>
+        <td>${statusPill(o.status)}</td>
+        <td>${fmtNum(o.qty)}</td>
+        <td>${fmtMoney(o.price)}</td>
+        <td>${fmtNum(o.dealt_qty)}</td>
+        <td>${fmtMoney(o.dealt_avg_price)}</td>
+        <td class="sym" style="color:var(--muted)">${o.order_id || ""}</td>
+      </tr>`).join("");
+    $("openOrdersWrap").innerHTML =
+      `<table><thead><tr>
+        <th class="sym">Code</th><th class="sym">Side</th><th class="sym">Status</th>
+        <th>Qty</th><th>Price</th><th>Dealt</th><th>Avg Fill</th><th class="sym">Order ID</th>
+      </tr></thead><tbody>${rows}</tbody></table>`;
+  }
+
+  function pick(o, keys) { for (const k of keys) if (o[k] !== undefined && o[k] !== null) return o[k]; return undefined; }
+
+  function renderFills(fills) {
+    $("fillCount").textContent = fills.length ? `(${fills.length})` : "";
+    if (!fills.length) { $("fillsWrap").innerHTML = `<div class="empty">No fills today.</div>`; return; }
+    const rows = fills.map(d => {
+      const code = pick(d, ["code"]);
+      const side = pick(d, ["trd_side", "side"]);
+      const qty = pick(d, ["qty", "dealt_qty", "quantity"]);
+      const price = pick(d, ["price", "dealt_avg_price"]);
+      const time = pick(d, ["create_time", "update_time", "time"]);
+      const id = pick(d, ["deal_id", "fill_id", "order_id"]);
+      return `<tr>
+        <td class="sym" style="color:var(--muted)">${time || ""}</td>
+        <td class="sym">${code || ""}</td>
+        <td class="sym">${String(side || "").replace(/^TrdSide\./, "")}</td>
+        <td>${fmtNum(qty)}</td>
+        <td>${fmtMoney(price)}</td>
+        <td class="sym" style="color:var(--muted)">${id || ""}</td>
+      </tr>`;
+    }).join("");
+    $("fillsWrap").innerHTML =
+      `<table><thead><tr>
+        <th class="sym">Time</th><th class="sym">Code</th><th class="sym">Side</th>
+        <th>Qty</th><th>Price</th><th class="sym">Deal ID</th>
+      </tr></thead><tbody>${rows}</tbody></table>`;
+  }
+
+  function renderPanelErrors(errors) {
+    if (!errors || !Object.keys(errors).length) { $("topError").innerHTML = ""; return; }
+    const items = Object.entries(errors).map(([k, v]) => `<b>${k}:</b> ${v}`).join("<br>");
+    $("topError").innerHTML = `<div class="err">Some panels failed to load:<br>${items}</div>`;
+  }
+
+  function setEnvBadge(env) {
+    const b = $("envBadge");
+    if (String(env).toUpperCase() === "REAL") { b.className = "env-badge env-live"; b.textContent = "LIVE"; }
+    else { b.className = "env-badge env-paper"; b.textContent = "paper"; }
+  }
+
+  async function loadAccounts() {
+    try {
+      const data = await fetchJSON("/api/accounts");
+      setEnvBadge(data.trd_env);
+      const sel = $("accountSelect");
+      const accts = data.accounts || [];
+      if (!accts.length) {
+        sel.innerHTML = `<option>No paper accounts</option>`;
+        return;
+      }
+      sel.innerHTML = accts.map(a =>
+        `<option value="${a.acc_id}" data-market="${a.market}">${a.label}</option>`
+      ).join("");
+      accountsLoaded = true;
+      currentAcc = { acc_id: accts[0].acc_id, market: accts[0].market };
+    } catch (e) {
+      $("accountSelect").innerHTML = `<option>Unavailable</option>`;
+      throw e;
+    }
+  }
+
+  async function refresh() {
+    try {
+      let url = "/api/snapshot";
+      if (currentAcc && currentAcc.acc_id) {
+        url += `?acc_id=${encodeURIComponent(currentAcc.acc_id)}` +
+               (currentAcc.market ? `&market=${encodeURIComponent(currentAcc.market)}` : "");
+      }
+      const snap = await fetchJSON(url);
+      setEnvBadge(snap.trd_env);
+      renderKPIs(snap.funds);
+      renderPositions(snap.positions || []);
+      renderOrders(snap.orders_open || []);
+      renderFills(snap.fills || []);
+      renderPanelErrors(snap.errors);
+      $("readyBanner").innerHTML = "";
+      $("lastUpdated").textContent = new Date().toLocaleTimeString();
+      setConn("ok", "live · " + refreshSeconds + "s");
+    } catch (e) {
+      if (e.status === 503) {
+        setConn("wait", "waiting for OpenD");
+        $("readyBanner").innerHTML =
+          `<div class="banner banner-wait">⏳ Waiting for OpenD gateway to be ready. ${e.message || ""}
+           <br>Start the Moomoo OpenD GUI and confirm it is authenticated.</div>`;
+      } else {
+        setConn("bad", "error");
+        $("topError").innerHTML = `<div class="err">${e.message || "Request failed"}</div>`;
+      }
+    }
+  }
+
+  function scheduleLoop() {
+    if (timer) clearInterval(timer);
+    timer = setInterval(refresh, refreshSeconds * 1000);
+  }
+
+  async function init() {
+    try {
+      const h = await fetchJSON("/api/health");
+      refreshSeconds = h.refresh_seconds || 30;
+      setEnvBadge(h.trd_env);
+    } catch (e) {
+      // health 503 is fine — refresh() will surface the banner
+      refreshSeconds = 30;
+    }
+    try { await loadAccounts(); } catch (e) { /* surfaced on refresh */ }
+    await refresh();
+    scheduleLoop();
+  }
+
+  $("refreshBtn").addEventListener("click", refresh);
+  $("accountSelect").addEventListener("change", function () {
+    const opt = this.options[this.selectedIndex];
+    currentAcc = { acc_id: opt.value, market: opt.getAttribute("data-market") };
+    refresh();
+  });
+
+  init();
+})();
+</script>
+</body>
+</html>

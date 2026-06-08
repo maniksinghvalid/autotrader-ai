@@ -1,0 +1,15 @@
+{
+  "_comment": "Non-secret dashboard presentation settings. Copy to config/dashboard.config to use. OpenD connection details and credentials are NOT set here — they come from FUTU_* environment variables read by skills/moomooapi common.get_config(). Risk limits are not configured here.",
+
+  "web_host": "127.0.0.1",
+  "web_port": 8787,
+
+  "refresh_seconds": 30,
+  "_refresh_note": "Client poll cadence. Keep >= 20s: each refresh makes ~4 refresh_cache=True calls, and Moomoo limits refreshing queries to 10 per 30s per account.",
+
+  "opend_ready_timeout": 30,
+  "_opend_note": "Seconds the startup health check will poll OpenD (exponential backoff) before reporting it is not ready.",
+
+  "preferred_market": "US",
+  "_market_note": "Market used to query an account when several are authorized (US / HK / CN / SG / HKCC)."
+}

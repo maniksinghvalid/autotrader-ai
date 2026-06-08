@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environments (uv / venv)
+.venv/
+venv/
+env/
+
+# Local config — examples are committed, real/secret copies are not
+# (CLAUDE.md: never commit credentials or risk limits)
+config/secure.config
+config/dashboard.config
+
+# Claude Code local session state
+.remember/

@@ -1,0 +1,10 @@
+# AutoTrader operations dashboard — backend dependencies.
+flask>=3.0
+
+# Moomoo SDK. The vendored skills/moomooapi scripts (invoked by server.py via
+# sys.executable) import `moomoo`, so it must live in the SAME environment as
+# this dashboard. Pinned here so `pip`/`uv` install a self-sufficient env.
+# NOTE: this installs the Python SDK only. The Moomoo OpenD GUI is a native app
+# and is NOT a pip package — install it (and write the version stamp) via the
+# /install-moomoo-opend skill. Min SDK 10.4.6408 (crypto needs >= 10.5.6508).
+moomoo-api>=10.4.6408
