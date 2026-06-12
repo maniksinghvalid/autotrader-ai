@@ -67,3 +67,28 @@ def test_shutdown_cancels_all_open_orders(tmp_path):
     assert len(b.get_open_orders()) == 1
     eng.shutdown()
     assert b.get_open_orders() == []
+
+
+from autotrader.domain import OrderRequest
+
+
+def test_tick_sell_uses_position_qty_not_order_qty(tmp_path):
+    """A SELL exit must liquidate the full position, not just order_qty shares."""
+    b = SimBroker(quotes={"US.AAPL": 94.0}, cash=100000.0)
+    # Create a position of 10 shares at avg_price=120 via a direct limit order.
+    # stop_loss_pct=0.05 -> stop at 120*0.95=114; quote 94 < 114 -> stop triggers.
+    b.place_order(OrderRequest(symbol="US.AAPL", side="BUY", qty=10,
+                               order_type="LIMIT", limit_price=120.0,
+                               client_order_id="setup-cid"))
+    strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=999.0,
+                                             stop_loss_pct=0.05, take_profit_pct=0.10,
+                                             confidence=0.7))
+    # order_qty=1, position=10 — the SELL should be for 10, not 1.
+    eng = TradeEngine(broker=b, strategy=strat, cfg=_cfg(), order_qty=1,
+                      audit_path=str(tmp_path / "audit.jsonl"))
+    result = eng.tick()
+    assert result.action == "ORDER_PLACED"
+    all_fills = b.reconcile_fills(None)
+    sell_fills = [f for f in all_fills if f.side == "SELL"]
+    assert len(sell_fills) == 1, "exactly one SELL fill expected"
+    assert sell_fills[0].qty == 10, f"expected qty 10 (position qty), got {sell_fills[0].qty}"

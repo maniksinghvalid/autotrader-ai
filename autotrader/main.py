@@ -50,9 +50,11 @@ class TradeEngine:
             return TickResult("DROPPED_LOW_CONFIDENCE", f"{signal.confidence}")
 
         self._signal_seq += 1
+        # SELL exits must liquidate the full position; BUY uses the configured order_qty.
+        sell_qty = pos.qty if (signal.direction == "SELL" and pos is not None) else self._qty
         cid = OrderRouter.make_client_order_id(
-            signal.symbol, signal.direction, self._qty, f"sig-{self._signal_seq}")
-        req = OrderRequest(symbol=signal.symbol, side=signal.direction, qty=self._qty,
+            signal.symbol, signal.direction, sell_qty, f"sig-{self._signal_seq}")
+        req = OrderRequest(symbol=signal.symbol, side=signal.direction, qty=sell_qty,
                            order_type="MARKET", limit_price=None, client_order_id=cid)
 
         decision = evaluate(req, snap, self._cfg, ref_price=price)
