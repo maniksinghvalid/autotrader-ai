@@ -14,8 +14,17 @@ Deterministic paper-trading core for Moomoo OpenD. Architecture and rationale:
 ## Run (paper only)
 1. Start & authenticate the OpenD GUI (paper account). Install via `/install-moomoo-opend`.
 2. `cp config/risk.config.example config/risk.config` and review limits (human-reviewed).
-3. Export `RISK_*` (from risk.config) and `FUTU_ACC_ID`, set `ENTRY_PRICE`, then:
-   `python -m autotrader.main`
+3. Load the config and account, set an entry price, then run one tick:
+   ```bash
+   set -a && source config/risk.config && set +a   # exports RISK_*
+   export FUTU_ACC_ID=<your SIMULATE acc_id>        # from get_accounts.py
+   export ENTRY_PRICE=<price>                        # see warning below
+   python -m autotrader.main
+   ```
+   **Warning:** v1 runs a single tick and `ENTRY_PRICE` defaults to `0`. With an
+   unset/zero entry, the threshold `price >= entry` is always true, so the bot
+   buys at market immediately (the deliberate "place one order" demo). Set
+   `ENTRY_PRICE` to the level you actually want to trigger entry.
 
 LIVE is intentionally blocked in v1 (`main()` refuses non-PAPER). Live is a later,
 separately-validated phase requiring the two-key unlock.
