@@ -57,3 +57,24 @@ def test_strategy_is_deterministic_no_internal_state():
     a = s.evaluate(price=100.5, position=None)
     b = s.evaluate(price=100.5, position=None)
     assert a == b  # same inputs -> same output, no tick-to-tick state
+
+
+def test_stop_loss_boundary_is_inclusive():
+    # change is computed off avg_price; pin the inclusive <= -stop semantics.
+    s = ThresholdStrategy(_params())  # stop 5%, target 10%
+    pos = Position("US.AAPL", qty=10, avg_price=100.0)
+    assert s.evaluate(price=95.0, position=pos).direction == "SELL"  # exactly -5% fires
+    assert s.evaluate(price=95.1, position=pos) is None              # -4.9% holds
+
+
+def test_take_profit_boundary_is_inclusive():
+    s = ThresholdStrategy(_params())  # stop 5%, target 10%
+    pos = Position("US.AAPL", qty=10, avg_price=100.0)
+    assert s.evaluate(price=110.0, position=pos).direction == "SELL"  # exactly +10% fires
+    assert s.evaluate(price=109.9, position=pos) is None              # +9.9% holds
+
+
+def test_entry_threshold_is_inclusive_when_flat():
+    s = ThresholdStrategy(_params(entry_price=100.0))
+    assert s.evaluate(price=100.0, position=None).direction == "BUY"  # exactly at entry fires
+    assert s.evaluate(price=99.99, position=None) is None             # just below holds
