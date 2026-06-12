@@ -80,3 +80,38 @@ def test_reject_missing_ref_price():
     d = evaluate(_req(order_type="MARKET", limit_price=None), _snap(), _cfg(), ref_price=None)
     assert d.approved is False
     assert "price" in d.reason.lower()
+
+
+def test_mixed_case_symbol_uses_uppercase_position_for_cap():
+    # Allow-list and position lookup must agree on case: a lowercase symbol must
+    # not pass the allow-list while missing the stored uppercase position (which
+    # would compute the cap off a base of 0 and bypass it).
+    snap = _snap(positions=(Position("US.AAPL", qty=98, avg_price=100.0),))
+    d = evaluate(_req(symbol="us.aapl", qty=5), snap, _cfg(max_position_qty=100), ref_price=100.0)
+    assert d.approved is False
+    assert "position" in d.reason.lower()
+
+
+def test_reject_sell_that_would_open_a_short():
+    # v1 is long-only: selling more than held must be rejected, not allowed to
+    # build a short up to the cap via abs().
+    snap = _snap(positions=(Position("US.AAPL", qty=3, avg_price=100.0),))
+    d = evaluate(_req(side="SELL", qty=10), snap, _cfg(), ref_price=100.0)
+    assert d.approved is False
+    assert "short" in d.reason.lower()
+
+
+def test_sell_to_flat_is_allowed():
+    # Selling exactly the held quantity (resulting == 0) must NOT be rejected.
+    snap = _snap(positions=(Position("US.AAPL", qty=5, avg_price=100.0),))
+    d = evaluate(_req(side="SELL", qty=5), snap, _cfg(), ref_price=100.0)
+    assert d.approved is True
+
+
+def test_reject_nan_reference_price():
+    # A non-finite price is truthy and slips past `<= 0`; it must be rejected so
+    # notional/exposure caps cannot be bypassed by a NaN.
+    d = evaluate(_req(order_type="MARKET", limit_price=None), _snap(), _cfg(),
+                 ref_price=float("nan"))
+    assert d.approved is False
+    assert "price" in d.reason.lower()
