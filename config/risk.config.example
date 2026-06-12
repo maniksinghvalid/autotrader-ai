@@ -1,0 +1,10 @@
+# Copy to config/risk.config and adjust. Risk-limit CHANGES require explicit human
+# review (CLAUDE.md). These are presentation/limit values, not secrets.
+# Account/host/PIN are NOT here — they come from FUTU_* env vars and the OpenD GUI.
+RISK_TRADING_ENV=PAPER
+RISK_MIN_CONFIDENCE=0.60
+RISK_MAX_ORDER_NOTIONAL=2000
+RISK_MAX_POSITION_QTY=100
+RISK_DAILY_LOSS_LIMIT=500
+RISK_MAX_GROSS_EXPOSURE=10000
+RISK_ALLOWED_SYMBOLS=US.AAPL,US.MSFT,US.NIO
