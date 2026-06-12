@@ -31,6 +31,7 @@ from common import (
     safe_close,
     safe_get,
     safe_float,
+    safe_int,
     format_enum,
     is_empty,
     ModifyOrderOp,
@@ -90,6 +91,21 @@ def modify_order(order_id, price=None, quantity=None, adjust_limit=0,
     ctx = None
     try:
         ctx = create_trade_context(market, security_firm=parse_security_firm(security_firm))
+        # R19: reject MASTER accounts (parity with place_order.py). Patched per research R19.
+        if acc_id:
+            ret_a, acc_data = ctx.get_acc_list()
+            if ret_a == RET_OK and not is_empty(acc_data):
+                for i in range(len(acc_data)):
+                    row = acc_data.iloc[i] if hasattr(acc_data, "iloc") else acc_data[i]
+                    if safe_int(safe_get(row, "acc_id", default=0)) == safe_int(acc_id):
+                        if format_enum(safe_get(row, "acc_role", default="")).upper() == "MASTER":
+                            msg = "Master account (MASTER) is not allowed to modify orders, please select a non-master account"
+                            if output_json:
+                                print(json.dumps({"error": msg}, ensure_ascii=False))
+                            else:
+                                print(f"Error: {msg}")
+                            sys.exit(1)
+                        break
 
         # Auto-complete: retrieve missing price or quantity from the original order
         if price is None or quantity is None:

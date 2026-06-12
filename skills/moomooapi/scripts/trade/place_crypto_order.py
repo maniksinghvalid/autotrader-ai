@@ -138,6 +138,22 @@ def place_crypto_order(code, side, quantity, price=None, order_type="NORMAL",
     ctx = None
     try:
         ctx = create_crypto_trade_context(security_firm=firm_enum)
+        # R19: reject MASTER accounts (parity with place_order.py) — a master
+        # account order affects the whole account group. Patched per research R19.
+        if acc_id:
+            ret_a, acc_data = ctx.get_acc_list()
+            if ret_a == RET_OK and not is_empty(acc_data):
+                for i in range(len(acc_data)):
+                    row = acc_data.iloc[i] if hasattr(acc_data, "iloc") else acc_data[i]
+                    if safe_int(safe_get(row, "acc_id", default=0)) == safe_int(acc_id):
+                        if format_enum(safe_get(row, "acc_role", default="")).upper() == "MASTER":
+                            msg = "Master account (MASTER) is not allowed to place orders, please select a non-master account"
+                            if output_json:
+                                print(json.dumps({"error": msg}, ensure_ascii=False))
+                            else:
+                                print(f"Error: {msg}")
+                            sys.exit(1)
+                        break
         order_kwargs = dict(
             price=price_val,
             qty=qty,
