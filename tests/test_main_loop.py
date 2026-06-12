@@ -92,3 +92,24 @@ def test_tick_sell_uses_position_qty_not_order_qty(tmp_path):
     sell_fills = [f for f in all_fills if f.side == "SELL"]
     assert len(sell_fills) == 1, "exactly one SELL fill expected"
     assert sell_fills[0].qty == 10, f"expected qty 10 (position qty), got {sell_fills[0].qty}"
+
+
+def test_tick_records_signal_and_trade_to_db(tmp_path):
+    """When a DB is injected, tick() writes the signal and trade to it."""
+    from autotrader.db import DB
+    db = DB(str(tmp_path / "autotrader.db"))
+    b = SimBroker(quotes={"US.AAPL": 101.0}, cash=100000.0)
+    strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=100.0,
+                                             stop_loss_pct=0.05, take_profit_pct=0.10,
+                                             confidence=0.7))
+    eng = TradeEngine(broker=b, strategy=strat, cfg=_cfg(), order_qty=10,
+                      audit_path=str(tmp_path / "audit.jsonl"), db=db)
+    result = eng.tick()
+    assert result.action == "ORDER_PLACED"
+    sig_count = db._conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
+    assert sig_count == 1, "signal must be recorded"
+    trade_count = db._conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+    assert trade_count == 1, "trade must be recorded"
+    perf_count = db._conn.execute("SELECT COUNT(*) FROM performance").fetchone()[0]
+    assert perf_count == 1, "performance snapshot must be recorded"
+    db.close()

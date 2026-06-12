@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Optional
 
 from autotrader.broker import Broker
 from autotrader.config import RiskConfig, load_risk_config
@@ -14,6 +15,9 @@ from autotrader.domain import OrderRequest, OrderState
 from autotrader.risk_core import evaluate
 from autotrader.router import OrderRouter
 from autotrader.strategies.threshold import ThresholdStrategy
+
+if TYPE_CHECKING:
+    from autotrader.db import DB
 
 logger = logging.getLogger("autotrader.engine")
 
@@ -26,13 +30,14 @@ class TickResult:
 
 class TradeEngine:
     def __init__(self, broker: Broker, strategy: ThresholdStrategy, cfg: RiskConfig,
-                 order_qty: int, audit_path: str):
+                 order_qty: int, audit_path: str, db: "Optional[DB]" = None):
         self._b = broker
         self._strat = strategy
         self._cfg = cfg
         self._qty = order_qty
         self._router = OrderRouter(broker, audit_path=audit_path)
         self._signal_seq = 0
+        self._db = db
 
     def tick(self) -> TickResult:
         snap = self._b.get_account()
@@ -49,11 +54,26 @@ class TradeEngine:
         if signal.confidence < self._cfg.min_confidence:
             return TickResult("DROPPED_LOW_CONFIDENCE", f"{signal.confidence}")
 
+        if self._db:
+            self._db.record_performance(
+                day_pnl=snap.day_pnl,
+                total_assets=snap.total_assets,
+                cash=snap.cash,
+                gross_exposure=snap.gross_exposure(),
+            )
+
         self._signal_seq += 1
+        signal_id = f"sig-{self._signal_seq}"
+        if self._db:
+            self._db.record_signal(
+                symbol=signal.symbol, direction=signal.direction,
+                confidence=signal.confidence, rationale=signal.rationale,
+                signal_id=signal_id,
+            )
+
         # SELL exits must liquidate the full position; BUY uses the configured order_qty.
         sell_qty = pos.qty if (signal.direction == "SELL" and pos is not None) else self._qty
-        cid = OrderRouter.make_client_order_id(
-            signal.symbol, signal.direction, sell_qty, f"sig-{self._signal_seq}")
+        cid = OrderRouter.make_client_order_id(signal.symbol, signal.direction, sell_qty, signal_id)
         req = OrderRequest(symbol=signal.symbol, side=signal.direction, qty=sell_qty,
                            order_type="MARKET", limit_price=None, client_order_id=cid)
 
@@ -63,6 +83,17 @@ class TradeEngine:
             return TickResult("REJECTED_BY_RISK", decision.reason)
 
         ack = self._router.submit(req)
+        if self._db:
+            self._db.record_trade(
+                client_order_id=ack.client_order_id,
+                symbol=req.symbol,
+                side=req.side,
+                qty=req.qty,
+                order_type=req.order_type,
+                limit_price=req.limit_price,
+                broker_order_id=ack.broker_order_id,
+                state=ack.state.value,
+            )
         if ack.state is OrderState.UNKNOWN:
             return TickResult("ORDER_UNKNOWN", ack.client_order_id)
         if ack.state is OrderState.REJECTED:
@@ -110,8 +141,12 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
     audit = os.path.join(os.path.expanduser("~"), ".futu_trade_audit.jsonl")
     broker = MoomooBroker()
     broker.connect()
+    db_path = os.path.expanduser(os.getenv("AUTOTRADER_DB_PATH", "~/.autotrader.db"))
+    from autotrader.db import DB  # lazy import: keeps tests that skip main() SDK-free
+    db = DB(db_path)
+    logger.info("DB projection at %s", db_path)
     engine = TradeEngine(broker, strat, cfg, order_qty=int(os.getenv("ORDER_QTY", "1")),
-                         audit_path=audit)
+                         audit_path=audit, db=db)
     try:
         result = engine.tick()  # v1: single deterministic tick; loop added in Phase 2
         logger.info("tick result: %s %s", result.action, result.detail)
@@ -123,6 +158,7 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
         except Exception as e:
             logger.error("shutdown error (working orders may remain): %s", e)
         broker.close()
+        db.close()
     return 0
 
 
