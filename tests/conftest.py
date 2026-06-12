@@ -1,15 +1,10 @@
-"""Shared test fixtures. Unit tests must run with no OpenD and no SDK import."""
-import sys
-import pytest
+"""Shared test fixtures.
 
-
-@pytest.fixture(autouse=True)
-def _no_accidental_sdk(monkeypatch):
-    """Fail loudly if a unit test imports the live SDK module `moomoo`.
-
-    moomoo_broker.py is the ONLY module allowed to touch it, and it is never
-    imported by the pure-core tests. This guards that invariant.
-    """
-    if "moomoo" in sys.modules:
-        pytest.skip("moomoo SDK present in env; pure-core tests assume it is absent")
-    yield
+The invariant "pure-core modules never import the live `moomoo` SDK" is enforced
+by tests/test_no_sdk_in_core.py (a subprocess import check), NOT by a session
+autouse fixture. The earlier autouse guard skipped on `moomoo in sys.modules`,
+which became order-dependent and wrong once the SDK is actually installed: the
+first test to load the SDK (R19 / live) would then cause every later test in the
+same session to skip. A subprocess check verifies the real property without that
+cross-test contamination.
+"""
