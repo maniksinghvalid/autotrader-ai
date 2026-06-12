@@ -5,6 +5,7 @@ a manual OpenD GUI action (CLAUDE.md hard rule). Reuses common.py factories
 rather than constructing a trade context directly, so env checks aren't bypassed."""
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from typing import List, Optional
@@ -14,6 +15,8 @@ from autotrader.domain import (
     AccountSnapshot, BrokerError, BrokerErrorKind, Fill, OrderAck, OrderRequest,
     OrderState, Position,
 )
+
+logger = logging.getLogger("autotrader.broker")
 
 # Resolve the vendored scripts dir and import common.py (triggers its env checks).
 _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -94,6 +97,7 @@ class MoomooBroker(Broker):
 
     def cancel_order(self, broker_order_id: str) -> None:
         from moomoo import ModifyOrderOp  # confined to this adapter
+        logger.info("cancel_order: %s", broker_order_id)
         ret, data = self._trade.modify_order(
             modify_order_op=ModifyOrderOp.CANCEL, order_id=broker_order_id,
             qty=0, price=0, trd_env=self._env(), acc_id=self._acc_id)
@@ -101,12 +105,14 @@ class MoomooBroker(Broker):
             raise BrokerError(BrokerErrorKind.UNKNOWN, f"cancel failed: {data}")
 
     def cancel_all(self) -> None:
-        for ack in self.get_open_orders():
+        orders = self.get_open_orders()
+        logger.info("cancel_all: %d open order(s) to cancel", len(orders))
+        for ack in orders:
             if ack.broker_order_id:
                 try:
                     self.cancel_order(ack.broker_order_id)
                 except BrokerError:
-                    pass  # best-effort flatten on shutdown; logged by caller
+                    pass  # best-effort flatten on shutdown; logged by cancel_order
 
     def get_open_orders(self) -> List[OrderAck]:
         ret, data = self._trade.order_list_query(
@@ -170,11 +176,10 @@ class MoomooBroker(Broker):
         return len(self.get_open_orders())
 
     def reconcile_fills(self, since: Optional[str]) -> List[Fill]:
-        # v1: `since` is not yet used for server-side filtering — the full deal
-        # list is returned and callers dedupe by fill_id. A date filter is a
-        # Phase-2 concern (reconcile is not run in the v1 single-tick loop).
-        ret, data = self._trade.deal_list_query(
-            trd_env=self._env(), acc_id=self._acc_id, refresh_cache=True)
+        kwargs = dict(trd_env=self._env(), acc_id=self._acc_id, refresh_cache=True)
+        if since:
+            kwargs["begin_time"] = since
+        ret, data = self._trade.deal_list_query(**kwargs)
         if not self._ok(ret) or self._c.is_empty(data):
             return []
         out: List[Fill] = []

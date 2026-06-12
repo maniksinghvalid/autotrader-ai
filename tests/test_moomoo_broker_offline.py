@@ -116,3 +116,44 @@ def test_get_account_raises_when_accinfo_fails():
     b = _broker(_FakeTrade(acc_ok=False))
     with pytest.raises(BrokerError):
         b.get_account()
+
+
+class _CapturingTrade:
+    """Records kwargs passed to deal_list_query for inspection."""
+    def __init__(self):
+        self.captured = {}
+
+    def deal_list_query(self, **kwargs):
+        self.captured.update(kwargs)
+        return 0, None  # RET_OK=0, empty data -> reconcile returns []
+
+
+def _broker_with_trade(trade):
+    """Extend the existing _broker() helper with a specific trade context.
+
+    Rate limiters are injected in Task 4; until reconcile_fills consults a
+    limiter, this helper needs none.
+    """
+    b = MoomooBroker.__new__(MoomooBroker)
+    b._c = _FakeCommon()
+    b._trade = trade
+    b._quote = None
+    b._acc_id = 1
+    return b
+
+
+def test_reconcile_fills_since_passes_begin_time():
+    """reconcile_fills(since=...) must forward begin_time to deal_list_query."""
+    trade = _CapturingTrade()
+    b = _broker_with_trade(trade)
+    b.reconcile_fills(since="2026-06-12 09:30:00")
+    assert "begin_time" in trade.captured, "begin_time must be forwarded when since is set"
+    assert trade.captured["begin_time"] == "2026-06-12 09:30:00"
+
+
+def test_reconcile_fills_no_since_omits_begin_time():
+    """reconcile_fills(since=None) must NOT pass begin_time to deal_list_query."""
+    trade = _CapturingTrade()
+    b = _broker_with_trade(trade)
+    b.reconcile_fills(since=None)
+    assert "begin_time" not in trade.captured, "begin_time must be absent when since=None"
