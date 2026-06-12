@@ -1,8 +1,8 @@
 """MoomooBroker — the ONLY app module that imports the vendored common.py / SDK.
 Confines all Moomoo-isms: US.AAPL codes, (ret_code, data), refresh_cache=True,
-OrderStatus mapping, TrdEnv.SIMULATE. Never calls unlock_trade (CLAUDE.md hard
-rule). Reuses common.py factories rather than constructing OpenSecTradeContext
-directly, so env checks are not bypassed."""
+OrderStatus mapping, TrdEnv.SIMULATE. Never sends an SDK trade-unlock — that is
+a manual OpenD GUI action (CLAUDE.md hard rule). Reuses common.py factories
+rather than constructing a trade context directly, so env checks aren't bypassed."""
 from __future__ import annotations
 
 import os
@@ -67,7 +67,7 @@ class MoomooBroker(Broker):
     # --- market data -----------------------------------------------------
     def get_quote(self, symbol: str) -> Optional[float]:
         ret, data = self._quote.get_market_snapshot([symbol])
-        if not self._ok(data if False else ret) or self._c.is_empty(data):
+        if not self._ok(ret) or self._c.is_empty(data):
             return None
         return self._c.safe_float(self._c.safe_get(data.iloc[0], "last_price", default=0)) or None
 
@@ -134,16 +134,28 @@ class MoomooBroker(Broker):
         total = self._c.safe_float(self._c.safe_get(acc.iloc[0], "total_assets", default=0))
         pnl = self._c.safe_float(self._c.safe_get(acc.iloc[0], "realized_pl", "today_pnl_value", default=0))
         positions = self._positions()
-        # If the SDK returns no usable snapshot, mark stale so risk_core refuses (E1).
+        if positions is None:
+            # Position query FAILED — never present a falsely-flat snapshot the
+            # risk core would trust. Mark stale so it refuses to trade (E1/R7).
+            return AccountSnapshot(cash=cash, total_assets=total, day_pnl=pnl,
+                                   stale=True, positions=())
+        # A genuinely empty account with zero assets is also treated as stale.
         stale = (total == 0 and not positions)
         return AccountSnapshot(cash=cash, total_assets=total, day_pnl=pnl,
                                stale=stale, positions=tuple(positions))
 
-    def _positions(self) -> List[Position]:
+    def _positions(self) -> Optional[List[Position]]:
+        """Return current positions, or None if the position query FAILED.
+
+        None (query error) is distinct from [] (genuinely flat): the caller
+        turns a None into a stale snapshot rather than a falsely-flat one.
+        """
         ret, data = self._trade.position_list_query(
             trd_env=self._env(), acc_id=self._acc_id, refresh_cache=True)
-        if not self._ok(ret) or self._c.is_empty(data):
-            return []
+        if not self._ok(ret):
+            return None  # query failed — do NOT report flat
+        if self._c.is_empty(data):
+            return []    # genuinely no positions
         out: List[Position] = []
         for i in range(len(data)):
             row = data.iloc[i]
@@ -158,6 +170,9 @@ class MoomooBroker(Broker):
         return len(self.get_open_orders())
 
     def reconcile_fills(self, since: Optional[str]) -> List[Fill]:
+        # v1: `since` is not yet used for server-side filtering — the full deal
+        # list is returned and callers dedupe by fill_id. A date filter is a
+        # Phase-2 concern (reconcile is not run in the v1 single-tick loop).
         ret, data = self._trade.deal_list_query(
             trd_env=self._env(), acc_id=self._acc_id, refresh_cache=True)
         if not self._ok(ret) or self._c.is_empty(data):
