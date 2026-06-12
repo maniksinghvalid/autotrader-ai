@@ -15,6 +15,7 @@ from autotrader.domain import (
     AccountSnapshot, BrokerError, BrokerErrorKind, Fill, OrderAck, OrderRequest,
     OrderState, Position,
 )
+from autotrader.rate_limiter import RateLimiter
 
 logger = logging.getLogger("autotrader.broker")
 
@@ -46,6 +47,8 @@ class MoomooBroker(Broker):
         self._acc_id = acc_id if acc_id is not None else self._c.get_default_acc_id()
         self._trade = None
         self._quote = None
+        self._order_rl = RateLimiter(capacity=15.0, refill_rate=0.5)    # 15 orders / 30 s
+        self._refresh_rl = RateLimiter(capacity=10.0, refill_rate=10 / 30)  # 10 refresh / 30 s
 
     # --- lifecycle -------------------------------------------------------
     def connect(self) -> None:
@@ -76,6 +79,9 @@ class MoomooBroker(Broker):
 
     # --- orders ----------------------------------------------------------
     def place_order(self, req: OrderRequest) -> OrderAck:
+        if not self._order_rl.acquire(timeout=60.0):
+            raise BrokerError(BrokerErrorKind.RATE_LIMIT,
+                               "order rate limit: timed out waiting for order token")
         if req.order_type == "MARKET":
             ot, price = self._c.OrderType.MARKET, 0.0
         else:
@@ -115,6 +121,8 @@ class MoomooBroker(Broker):
                     pass  # best-effort flatten on shutdown; logged by cancel_order
 
     def get_open_orders(self) -> List[OrderAck]:
+        if not self._refresh_rl.acquire(timeout=60.0):
+            return []  # best-effort on shutdown/monitoring path
         ret, data = self._trade.order_list_query(
             trd_env=self._env(), acc_id=self._acc_id, refresh_cache=True)
         if not self._ok(ret) or self._c.is_empty(data):
@@ -132,6 +140,9 @@ class MoomooBroker(Broker):
 
     # --- account / positions / fills ------------------------------------
     def get_account(self) -> AccountSnapshot:
+        if not self._refresh_rl.acquire(timeout=60.0):
+            raise BrokerError(BrokerErrorKind.RATE_LIMIT,
+                               "refresh rate limit: timed out waiting for account token")
         ret, acc = self._trade.accinfo_query(
             trd_env=self._env(), acc_id=self._acc_id, refresh_cache=True)
         if not self._ok(ret):
@@ -156,6 +167,8 @@ class MoomooBroker(Broker):
         None (query error) is distinct from [] (genuinely flat): the caller
         turns a None into a stale snapshot rather than a falsely-flat one.
         """
+        if not self._refresh_rl.acquire(timeout=60.0):
+            return None  # treat rate-limit failure as a failed query -> stale snapshot
         ret, data = self._trade.position_list_query(
             trd_env=self._env(), acc_id=self._acc_id, refresh_cache=True)
         if not self._ok(ret):
@@ -176,6 +189,8 @@ class MoomooBroker(Broker):
         return len(self.get_open_orders())
 
     def reconcile_fills(self, since: Optional[str]) -> List[Fill]:
+        if not self._refresh_rl.acquire(timeout=60.0):
+            return []
         kwargs = dict(trd_env=self._env(), acc_id=self._acc_id, refresh_cache=True)
         if since:
             kwargs["begin_time"] = since

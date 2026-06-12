@@ -86,11 +86,14 @@ class _FakeTrade:
 
 
 def _broker(trade):
+    from autotrader.rate_limiter import RateLimiter
     b = MoomooBroker.__new__(MoomooBroker)  # bypass __init__ (no OpenD needed)
     b._c = _FakeCommon()
     b._trade = trade
     b._quote = None
     b._acc_id = 1
+    b._order_rl = RateLimiter(capacity=15.0, refill_rate=0.5)
+    b._refresh_rl = RateLimiter(capacity=10.0, refill_rate=10 / 30)
     return b
 
 
@@ -129,16 +132,15 @@ class _CapturingTrade:
 
 
 def _broker_with_trade(trade):
-    """Extend the existing _broker() helper with a specific trade context.
-
-    Rate limiters are injected in Task 4; until reconcile_fills consults a
-    limiter, this helper needs none.
-    """
+    """Extend the existing _broker() helper with a specific trade context."""
+    from autotrader.rate_limiter import RateLimiter
     b = MoomooBroker.__new__(MoomooBroker)
     b._c = _FakeCommon()
     b._trade = trade
     b._quote = None
     b._acc_id = 1
+    b._order_rl = RateLimiter(capacity=15.0, refill_rate=0.5)
+    b._refresh_rl = RateLimiter(capacity=10.0, refill_rate=10 / 30)
     return b
 
 
@@ -157,3 +159,24 @@ def test_reconcile_fills_no_since_omits_begin_time():
     b = _broker_with_trade(trade)
     b.reconcile_fills(since=None)
     assert "begin_time" not in trade.captured, "begin_time must be absent when since=None"
+
+
+def test_place_order_raises_rate_limit_when_order_limiter_drained():
+    """place_order must raise BrokerError(RATE_LIMIT) if the order bucket is empty."""
+    from autotrader.domain import BrokerError, BrokerErrorKind, OrderRequest
+    from autotrader.rate_limiter import RateLimiter
+
+    class _AlwaysTimeout:
+        def acquire(self, timeout=60.0):
+            return False  # simulates an always-drained bucket
+
+    b = MoomooBroker.__new__(MoomooBroker)
+    b._order_rl = _AlwaysTimeout()
+    b._refresh_rl = RateLimiter(capacity=10, refill_rate=10 / 30)
+
+    req = OrderRequest(symbol="US.AAPL", side="BUY", qty=1,
+                       order_type="MARKET", limit_price=None,
+                       client_order_id="test-cid")
+    with pytest.raises(BrokerError) as exc_info:
+        b.place_order(req)
+    assert exc_info.value.kind == BrokerErrorKind.RATE_LIMIT
