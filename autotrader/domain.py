@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from typing import Literal, Optional, Tuple
+from types import MappingProxyType
+from typing import Literal, Mapping, Optional, Tuple
 
 Side = Literal["BUY", "SELL"]
 OrderType = Literal["MARKET", "LIMIT"]
@@ -62,6 +63,8 @@ class OrderRequest:
     client_order_id: str
 
     def __post_init__(self):
+        if self.side not in ("BUY", "SELL"):
+            raise ValueError(f"OrderRequest.side must be BUY/SELL, got {self.side!r}")
         if self.qty <= 0:
             raise ValueError("OrderRequest.qty must be > 0")
         if self.order_type == "LIMIT" and self.limit_price is None:
@@ -73,7 +76,11 @@ class OrderAck:
     client_order_id: str
     broker_order_id: Optional[str]
     state: OrderState
-    raw: dict = field(default_factory=dict)
+    raw: Mapping[str, object] = field(default_factory=dict)
+
+    def __post_init__(self):
+        # Freeze the raw envelope so the value object is genuinely immutable.
+        object.__setattr__(self, "raw", MappingProxyType(dict(self.raw)))
 
 
 @dataclass(frozen=True)

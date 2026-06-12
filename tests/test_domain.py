@@ -27,6 +27,16 @@ def test_order_request_requires_positive_qty_and_limit_price_rules():
     with pytest.raises(ValueError):
         OrderRequest(symbol="US.AAPL", side="BUY", qty=10, order_type="LIMIT",
                      limit_price=None, client_order_id="abc")  # LIMIT needs a price
+    with pytest.raises(ValueError):
+        OrderRequest(symbol="US.AAPL", side="HOLD", qty=10, order_type="MARKET",
+                     limit_price=None, client_order_id="abc")  # side must be BUY/SELL
+
+
+def test_order_ack_raw_is_read_only():
+    ack = OrderAck("c", None, OrderState.SUBMITTED, {"k": 1})
+    assert ack.raw["k"] == 1
+    with pytest.raises(TypeError):
+        ack.raw["x"] = 1  # type: ignore[index]
 
 
 def test_account_snapshot_exposure_and_position_lookup():
