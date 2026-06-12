@@ -1,16 +1,9 @@
 import json
-import threading
 import pytest
-from autotrader.domain import OrderRequest, OrderState, AccountSnapshot
-from autotrader.config import RiskConfig
+from autotrader.broker import Broker
+from autotrader.domain import OrderRequest, OrderState
 from autotrader.sim_broker import SimBroker
 from autotrader.router import OrderRouter
-
-
-def _cfg():
-    return RiskConfig(trading_env="PAPER", min_confidence=0.6, max_order_notional=2000,
-                      max_position_qty=100, daily_loss_limit=500, max_gross_exposure=10000,
-                      allowed_symbols=frozenset({"US.AAPL"}))
 
 
 def _req(cid="c1", qty=5):
@@ -54,3 +47,21 @@ def test_make_client_order_id_is_stable_for_same_inputs():
     b = OrderRouter.make_client_order_id("US.AAPL", "BUY", 5, "sig-42")
     c = OrderRouter.make_client_order_id("US.AAPL", "BUY", 6, "sig-42")
     assert a == b and a != c
+
+
+class _BoomBroker(Broker):
+    """Broker whose place_order always fails (ACK timeout / socket drop)."""
+    def place_order(self, req):
+        raise RuntimeError("socket dropped")
+
+
+def test_router_maps_broker_exception_to_unknown(tmp_path):
+    # A broker failure must NEVER be a success: it becomes OrderState.UNKNOWN,
+    # is audited, and is cached so a retry returns the same UNKNOWN (no resubmit).
+    r = OrderRouter(_BoomBroker(), audit_path=str(tmp_path / "a.jsonl"))
+    ack = r.submit(_req())
+    assert ack.state is OrderState.UNKNOWN
+    assert ack.state.is_success() is False
+    assert r.submit(_req()) is ack  # idempotent: same ack object, not a resubmit
+    lines = [json.loads(l) for l in (tmp_path / "a.jsonl").read_text().splitlines()]
+    assert any(l["action"] == "ack" and l.get("state") == "UNKNOWN" for l in lines)
