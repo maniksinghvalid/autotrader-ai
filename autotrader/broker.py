@@ -1,0 +1,21 @@
+"""Broker contract. v1 ships a plain base class (NOT a Protocol yet — promoting
+is a ~30-min mechanical refactor, research §4.2). Concrete brokers: SimBroker
+(tests) and MoomooBroker (live OpenD). All Moomoo-isms live in MoomooBroker."""
+from __future__ import annotations
+
+from typing import List, Optional
+
+from autotrader.domain import AccountSnapshot, Fill, OrderAck, OrderRequest
+
+
+class Broker:
+    def connect(self) -> None: raise NotImplementedError
+    def is_ready(self) -> bool: raise NotImplementedError
+    def get_quote(self, symbol: str) -> Optional[float]: raise NotImplementedError
+    def place_order(self, req: OrderRequest) -> OrderAck: raise NotImplementedError
+    def cancel_order(self, broker_order_id: str) -> None: raise NotImplementedError
+    def cancel_all(self) -> None: raise NotImplementedError
+    def get_account(self) -> AccountSnapshot: raise NotImplementedError
+    def get_open_orders(self) -> List[OrderAck]: raise NotImplementedError
+    def reconcile_fills(self, since: Optional[str]) -> List[Fill]: raise NotImplementedError
+    def close(self) -> None: raise NotImplementedError
