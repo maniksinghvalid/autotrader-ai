@@ -68,11 +68,15 @@ class TradeEngine:
         return TickResult("ORDER_PLACED", str(ack.broker_order_id))
 
     def shutdown(self) -> None:
-        # Cancel-on-shutdown (CLAUDE.md). Best-effort flatten of working orders.
+        # Cancel-on-shutdown (CLAUDE.md). Best-effort flatten of working orders:
+        # a cancel failure is logged, never swallowed silently, and never masks
+        # the real shutdown reason.
         try:
             self._b.cancel_all()
-        finally:
-            logger.info("shutdown: cancel_all issued")
+            logger.info("shutdown: cancel_all completed")
+        except Exception as e:
+            logger.error("shutdown: cancel_all failed: %s", e)
+            raise
 
 
 def main() -> int:  # pragma: no cover — live entrypoint, covered by manual run
@@ -110,7 +114,12 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
         result = engine.tick()  # v1: single deterministic tick; loop added in Phase 2
         logger.info("tick result: %s %s", result.action, result.detail)
     finally:
-        engine.shutdown()
+        # Always disconnect, even if cancel-on-shutdown raises — a failed
+        # cancel_all must not leak the OpenD connection.
+        try:
+            engine.shutdown()
+        except Exception as e:
+            logger.error("shutdown error (working orders may remain): %s", e)
         broker.close()
     return 0
 

@@ -1,6 +1,3 @@
-import json
-import pytest
-from autotrader.domain import Position
 from autotrader.config import RiskConfig
 from autotrader.sim_broker import SimBroker
 from autotrader.strategies.threshold import ThresholdStrategy, StrategyParams
@@ -37,6 +34,15 @@ def test_tick_drops_low_confidence_signal(tmp_path):
     eng = _engine(b, cfg=_cfg(min_confidence=0.9), tmp_path=tmp_path)
     result = eng.tick()
     assert result.action == "DROPPED_LOW_CONFIDENCE"
+    assert b.get_account().position_qty("US.AAPL") == 0
+
+
+def test_tick_returns_no_quote_when_symbol_unpriced(tmp_path):
+    # Broker has no quote for the strategy's symbol -> NO_QUOTE, no order.
+    b = SimBroker(quotes={"US.MSFT": 100.0}, cash=100000.0)
+    eng = _engine(b, tmp_path=tmp_path)
+    result = eng.tick()
+    assert result.action == "NO_QUOTE"
     assert b.get_account().position_qty("US.AAPL") == 0
 
 
