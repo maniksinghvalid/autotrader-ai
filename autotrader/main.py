@@ -128,8 +128,16 @@ class TradeEngine:
         SAME audited risk path. Idempotent: the client_order_id is derived from
         the entry's signal id, so re-attaching for the same entry dedupes at the
         router. A rejected stop is logged, never fatal to the entry. Stop
-        consolidation on qty changes (pyramiding) is Phase 3."""
-        snap = self._b.get_account()  # reflect the just-placed position for the long-only check
+        consolidation on qty changes (pyramiding) is Phase 3.
+
+        LIVE NOTE (fail-safe): against SimBroker the BUY auto-fills, so the
+        re-fetched snapshot reflects the new position and the stop attaches. On
+        live OpenD a MARKET BUY returns SUBMITTED (async fill), so this snapshot
+        may still show the pre-entry position; the risk core then rejects the
+        stop as long-only (resulting < 0) and it simply does not attach this tick
+        — the entry is left unprotected but NEVER mis-directed (no short can
+        open). Attaching off a reconciled fill is a Phase 3 follow-up."""
+        snap = self._b.get_account()  # SimBroker: reflects the just-filled position (see LIVE NOTE)
         cid = OrderRouter.make_client_order_id(symbol, "SELL", qty, f"{entry_signal_id}-stop")
         req = OrderRequest(symbol=symbol, side="SELL", qty=qty, order_type="TRAILING_STOP",
                            limit_price=None, client_order_id=cid,
