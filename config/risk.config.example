@@ -22,3 +22,7 @@ RISK_TRAILING_STOP_PCT=5.0
 # External-signal file-drop inbox directory (Phase 2c). Unset = ingress disabled.
 # Drop RoutineSignalPayload *.json files here; they route through the risk core.
 # AUTOTRADER_SIGNAL_INBOX=~/.autotrader_inbox
+
+# Webhook ingress secrets (Phase 2c-W) live in config/secure.config (GITIGNORED)
+# — see config/secure.config.example. The webhook process also needs the same
+# AUTOTRADER_SIGNAL_INBOX value as the trader (it enqueues into that directory).

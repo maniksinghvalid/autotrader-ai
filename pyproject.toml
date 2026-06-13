@@ -6,6 +6,7 @@ dependencies = ["moomoo-api>=10.4.6408", "tzdata>=2024.1", "pydantic>=2.7"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+webhook = ["flask>=3.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

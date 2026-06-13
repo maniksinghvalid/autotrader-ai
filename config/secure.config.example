@@ -1,0 +1,13 @@
+# Copy to config/secure.config (GITIGNORED) and fill in. NEVER commit secrets.
+# Source it alongside risk.config:  set -a && source config/secure.config && set +a
+#
+# Shared secret for the webhook ingress (Phase 2c-W). Used BOTH as the
+# X-Webhook-Token header value AND as the HMAC-SHA256 key over the raw request
+# body. Generate a long random string:
+#   python3 -c "import secrets;print(secrets.token_urlsafe(32))"
+AUTOTRADER_WEBHOOK_SECRET=change-me-to-a-long-random-string
+
+# Webhook bind — LOCALHOST ONLY. Expose publicly with `ngrok http 8799`.
+AUTOTRADER_WEBHOOK_HOST=127.0.0.1
+AUTOTRADER_WEBHOOK_PORT=8799
+AUTOTRADER_WEBHOOK_MAX_BODY=65536
