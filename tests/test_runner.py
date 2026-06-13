@@ -32,7 +32,7 @@ def _dt(h, m, day=12):
     return datetime(2026, 6, day, h, m, tzinfo=_NY)
 
 
-def _build(tmp_path, broker, *, healthy=True, gate_enabled=False):
+def _build(tmp_path, broker, *, healthy=True, gate_enabled=False, inbox=None):
     db = DB(str(tmp_path / "runner.db"))
     gate = EntryGate(enabled=gate_enabled)
     strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=100.0,
@@ -44,7 +44,8 @@ def _build(tmp_path, broker, *, healthy=True, gate_enabled=False):
                      sleep=lambda s: None)
     runner = SessionRunner(engine=eng, broker=broker, db=db, gate=gate,
                            scheduler=LifecycleScheduler(), watchdog=watch,
-                           clock=FixedClock(_dt(8, 0)), sleep=lambda s: None)
+                           clock=FixedClock(_dt(8, 0)), sleep=lambda s: None,
+                           signal_inbox=inbox)
     return runner, db, gate
 
 
@@ -112,4 +113,42 @@ def test_run_loops_until_stop(tmp_path):
 
     runner.run(stop=stop)
     assert calls["n"] == 4, "stop polled until it returned True"
+    db.close()
+
+
+def test_run_once_routes_external_signal_from_inbox(tmp_path):
+    import json
+    from autotrader.signals.inbox import SignalInbox
+    inbox_dir = tmp_path / "inbox"
+    inbox_dir.mkdir()
+    payload = {
+        "routine_id": "r1", "timestamp": "2026-06-12T09:46:00-04:00",
+        "signal_changes": [
+            {"ticker": "AAPL", "direction": "UP", "transition": ["50", "200"],
+             "points_delta": 10, "driver": "breakout"}
+        ],
+    }
+    (inbox_dir / "sig1.json").write_text(json.dumps(payload))
+    # Quote 99 < entry 100 -> the STRATEGY emits NO_SIGNAL; only the external BUY acts.
+    b = SimBroker(quotes={"US.AAPL": 99.0}, cash=100000.0)
+    runner, db, gate = _build(tmp_path, b, inbox=SignalInbox(str(inbox_dir)))
+    runner.run_once(_dt(9, 46))   # ENTRY_OPEN fires -> gate opens -> external BUY routes
+    assert b.get_account().position_qty("US.AAPL") == 10
+    db.close()
+
+
+def test_run_once_skips_inbox_when_unhealthy(tmp_path):
+    import json
+    from autotrader.signals.inbox import SignalInbox
+    inbox_dir = tmp_path / "inbox"
+    inbox_dir.mkdir()
+    payload = {"routine_id": "r1", "timestamp": "2026-06-12T10:00:00-04:00",
+               "signal_changes": [{"ticker": "AAPL", "direction": "UP",
+                                   "transition": [], "points_delta": 10, "driver": "x"}]}
+    (inbox_dir / "sig1.json").write_text(json.dumps(payload))
+    b = SimBroker(quotes={"US.AAPL": 99.0}, cash=100000.0)
+    runner, db, gate = _build(tmp_path, b, healthy=False, inbox=SignalInbox(str(inbox_dir)))
+    assert runner.run_once(_dt(10, 0)) == "HALTED_UNHEALTHY"
+    assert b.get_account().position_qty("US.AAPL") == 0   # no external order placed
+    assert (inbox_dir / "sig1.json").exists()             # file NOT consumed while halted
     db.close()

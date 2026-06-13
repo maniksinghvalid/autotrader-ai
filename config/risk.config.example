@@ -18,3 +18,7 @@ RISK_TRAILING_STOP_PCT=5.0
 
 # Continuous-loop iteration interval in seconds (Phase 2b). Default: 5
 # AUTOTRADER_LOOP_INTERVAL=5
+
+# External-signal file-drop inbox directory (Phase 2c). Unset = ingress disabled.
+# Drop RoutineSignalPayload *.json files here; they route through the risk core.
+# AUTOTRADER_SIGNAL_INBOX=~/.autotrader_inbox

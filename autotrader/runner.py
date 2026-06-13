@@ -27,7 +27,8 @@ logger = logging.getLogger("autotrader.runner")
 class SessionRunner:
     def __init__(self, engine, broker, db, gate: EntryGate,
                  scheduler: LifecycleScheduler, watchdog, clock: Clock,
-                 sleep: Callable[[float], None], loop_interval: float = 5.0):
+                 sleep: Callable[[float], None], loop_interval: float = 5.0,
+                 signal_inbox=None):
         self._engine = engine
         self._broker = broker
         self._db = db
@@ -37,6 +38,7 @@ class SessionRunner:
         self._clock = clock
         self._sleep = sleep
         self._loop_interval = loop_interval
+        self._inbox = signal_inbox
 
     def _record_perf(self) -> None:
         snap = self._broker.get_account()
@@ -62,12 +64,18 @@ class SessionRunner:
 
     def run_once(self, now) -> str:
         """Execute one loop iteration. Returns the engine tick action, or
-        'HALTED_UNHEALTHY' if the watchdog could not restore the connection."""
+        'HALTED_UNHEALTHY' if the watchdog could not restore the connection.
+        External inbox signals are routed only when healthy."""
         for job in self._sched.poll(now):
             self._run_job(job)
         if not self._watch.ensure_healthy():
             return "HALTED_UNHEALTHY"
-        return self._engine.tick().action
+        action = self._engine.tick().action
+        if self._inbox is not None:
+            for sig in self._inbox.poll():
+                res = self._engine.submit_external_signal(sig)
+                logger.debug("external signal %s -> %s", sig.symbol, res.action)
+        return action
 
     def run(self, stop: Callable[[], bool]) -> None:
         logger.info("SessionRunner started (loop_interval=%.1fs)", self._loop_interval)

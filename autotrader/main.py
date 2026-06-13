@@ -208,11 +208,18 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
         reconcile=lambda: ground_truth_sync(broker, db),
         sleep=time.sleep,
     )
+    inbox = None
+    inbox_dir = os.getenv("AUTOTRADER_SIGNAL_INBOX")
+    if inbox_dir:
+        from autotrader.signals.inbox import SignalInbox
+        inbox = SignalInbox(os.path.expanduser(inbox_dir))
+        logger.info("external-signal inbox at %s", inbox_dir)
     runner = SessionRunner(
         engine=engine, broker=broker, db=db, gate=gate,
         scheduler=LifecycleScheduler(), watchdog=watchdog, clock=Clock(),
         sleep=time.sleep,
         loop_interval=float(os.getenv("AUTOTRADER_LOOP_INTERVAL", "5")),
+        signal_inbox=inbox,
     )
 
     stopped = {"flag": False}
