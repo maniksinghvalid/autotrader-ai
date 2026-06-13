@@ -60,3 +60,21 @@ def test_broker_error_carries_kind():
     err = BrokerError(BrokerErrorKind.RATE_LIMIT, "too fast")
     assert err.kind is BrokerErrorKind.RATE_LIMIT
     assert "too fast" in str(err)
+
+
+def test_trailing_stop_order_requires_trail_percent_and_no_limit():
+    r = OrderRequest(symbol="US.AAPL", side="SELL", qty=10, order_type="TRAILING_STOP",
+                     limit_price=None, client_order_id="ts", trail_percent=5.0)
+    assert r.trail_percent == 5.0
+    with pytest.raises(ValueError):  # missing trail_percent
+        OrderRequest(symbol="US.AAPL", side="SELL", qty=10, order_type="TRAILING_STOP",
+                     limit_price=None, client_order_id="ts")
+    with pytest.raises(ValueError):  # TRAILING_STOP must not carry a limit_price
+        OrderRequest(symbol="US.AAPL", side="SELL", qty=10, order_type="TRAILING_STOP",
+                     limit_price=99.0, client_order_id="ts", trail_percent=5.0)
+
+
+def test_non_trailing_order_defaults_trail_percent_to_none():
+    r = OrderRequest(symbol="US.AAPL", side="BUY", qty=1, order_type="MARKET",
+                     limit_price=None, client_order_id="m")
+    assert r.trail_percent is None

@@ -47,3 +47,25 @@ def test_reconcile_fills_returns_dedupable_fills():
     fills = b.reconcile_fills(since=None)
     assert len(fills) == 1
     assert fills[0].fill_id  # stable id for dedupe
+
+
+def _ts_req(cid="ts1", qty=10):
+    return OrderRequest(symbol="US.AAPL", side="SELL", qty=qty,
+                        order_type="TRAILING_STOP", limit_price=None,
+                        client_order_id=cid, trail_percent=5.0)
+
+
+def test_trailing_stop_rests_and_does_not_fill():
+    b = SimBroker(quotes={"US.AAPL": 100.0}, cash=10000.0)  # auto_fill defaults True
+    ack = b.place_order(_ts_req())
+    assert ack.state is OrderState.SUBMITTED              # resting, NOT filled
+    assert b.get_account().position_qty("US.AAPL") == 0   # no position change
+    assert len(b.get_open_orders()) == 1                  # appears as a working order
+
+
+def test_trailing_stop_cleared_by_cancel_all():
+    b = SimBroker(quotes={"US.AAPL": 100.0}, cash=10000.0)
+    b.place_order(_ts_req())
+    assert len(b.get_open_orders()) == 1
+    b.cancel_all()
+    assert b.get_open_orders() == []

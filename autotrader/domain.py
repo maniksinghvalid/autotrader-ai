@@ -8,7 +8,7 @@ from types import MappingProxyType
 from typing import Literal, Mapping, Optional, Tuple
 
 Side = Literal["BUY", "SELL"]
-OrderType = Literal["MARKET", "LIMIT"]
+OrderType = Literal["MARKET", "LIMIT", "TRAILING_STOP"]
 
 
 class OrderState(enum.Enum):
@@ -61,6 +61,7 @@ class OrderRequest:
     order_type: OrderType
     limit_price: Optional[float]
     client_order_id: str
+    trail_percent: Optional[float] = None   # required for TRAILING_STOP; else None
 
     def __post_init__(self):
         if self.side not in ("BUY", "SELL"):
@@ -69,6 +70,11 @@ class OrderRequest:
             raise ValueError("OrderRequest.qty must be > 0")
         if self.order_type == "LIMIT" and self.limit_price is None:
             raise ValueError("LIMIT order requires limit_price")
+        if self.order_type == "TRAILING_STOP":
+            if self.trail_percent is None or self.trail_percent <= 0:
+                raise ValueError("TRAILING_STOP order requires trail_percent > 0")
+            if self.limit_price is not None:
+                raise ValueError("TRAILING_STOP order must not set limit_price")
 
 
 @dataclass(frozen=True)

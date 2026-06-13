@@ -37,7 +37,10 @@ class SimBroker(Broker):
         self._seq += 1
         boid = f"sim-{self._seq}"
         price = req.limit_price or self._quotes.get(req.symbol, 0.0)
-        if self._auto_fill:
+        # A TRAILING_STOP is a broker-RESTING protective order: it never fills
+        # immediately, regardless of auto_fill (it waits for the trail to trigger).
+        rests = req.order_type == "TRAILING_STOP" or not self._auto_fill
+        if not rests:
             signed = req.qty if req.side == "BUY" else -req.qty
             self._cash -= signed * price
             prev = self._positions.get(req.symbol)

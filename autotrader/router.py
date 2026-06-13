@@ -54,7 +54,7 @@ class OrderRouter:
             self._audit("intent", {
                 "client_order_id": req.client_order_id, "symbol": req.symbol,
                 "side": req.side, "qty": req.qty, "order_type": req.order_type,
-                "limit_price": req.limit_price,
+                "limit_price": req.limit_price, "trail_percent": req.trail_percent,
             })
             try:
                 ack = self._broker.place_order(req)

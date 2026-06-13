@@ -91,17 +91,20 @@ class MoomooBroker(Broker):
         if not self._order_rl.acquire(timeout=60.0):
             raise BrokerError(BrokerErrorKind.RATE_LIMIT,
                                "order rate limit: timed out waiting for order token")
-        if req.order_type == "MARKET":
-            ot, price = self._c.OrderType.MARKET, 0.0
-        else:
-            ot, price = self._c.OrderType.NORMAL, float(req.limit_price)
         side = self._c.TrdSide.BUY if req.side == "BUY" else self._c.TrdSide.SELL
+        kwargs = dict(qty=int(req.qty), code=req.symbol, trd_side=side,
+                      trd_env=self._env(), acc_id=self._acc_id,
+                      remark=req.client_order_id[:64])  # idempotency key in remark (R8)
+        if req.order_type == "MARKET":
+            kwargs.update(price=0.0, order_type=self._c.OrderType.MARKET)
+        elif req.order_type == "TRAILING_STOP":  # pragma: no cover — live OpenD path
+            from moomoo import TrailType  # confined to this adapter
+            kwargs.update(price=0.0, order_type=self._c.OrderType.TRAILING_STOP,
+                          trail_type=TrailType.RATIO, trail_value=float(req.trail_percent))
+        else:  # LIMIT
+            kwargs.update(price=float(req.limit_price), order_type=self._c.OrderType.NORMAL)
         try:
-            ret, data = self._trade.place_order(
-                price=price, qty=int(req.qty), code=req.symbol, trd_side=side,
-                order_type=ot, trd_env=self._env(), acc_id=self._acc_id,
-                remark=req.client_order_id[:64],  # idempotency key in remark (R8)
-            )
+            ret, data = self._trade.place_order(**kwargs)
         except Exception as e:  # socket drop / timeout -> UNKNOWN, never success
             return OrderAck(req.client_order_id, None, OrderState.UNKNOWN, {"error": str(e)})
         if not self._ok(ret):
