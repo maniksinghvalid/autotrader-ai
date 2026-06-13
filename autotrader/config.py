@@ -38,6 +38,6 @@ def load_risk_config() -> RiskConfig:
         max_order_notional=_f("RISK_MAX_ORDER_NOTIONAL", 2000),
         max_position_qty=int(_f("RISK_MAX_POSITION_QTY", 100)),
         daily_loss_limit=_f("RISK_DAILY_LOSS_LIMIT", 500),
-        max_gross_exposure=_f("RISK_MAX_GROSS_EXPOSURE", 10000),
+        max_gross_exposure=_f("RISK_MAX_GROSS_EXPOSURE", 50000),
         allowed_symbols=symbols,
     )
