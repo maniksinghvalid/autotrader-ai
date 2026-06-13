@@ -143,6 +143,7 @@ When adding code outside the existing skill bundles, follow these rules.
 - Hardcode API keys, hosts, ports, or risk parameters anywhere outside `config/`.
 - Call `unlock_trade` via the SDK, or write code that does. Trade unlock is a manual GUI action.
 - Call order-execution scripts directly from a strategy — signals route through `main.py`.
+- Expose order execution to the internet. An **authenticated, enqueue-only signal ingress** is permitted (`autotrader/signals/webhook.py`, Phase 2c-W): it must (a) import no SDK and hold no broker handle, (b) require a shared secret **and** an HMAC-SHA256 body signature (constant-time), (c) only write validated `RoutineSignalPayload`s into the file-drop inbox. The local trader consumes that inbox through the risk core; OpenD is never exposed and the order path stays local. This **mitigates** hazard H1 (authenticated, no path to the OpenD socket) — it must never be relaxed into a handler that places orders directly.
 - Swallow exceptions silently.
 - Modify risk-limit values in `config/` as part of an unrelated change.
 - Write a strategy without a defined stop-loss or take-profit.

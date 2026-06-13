@@ -21,6 +21,8 @@ This is the third and final Phase-2 execution plan (see the 2a/2b scope notes an
 
 **Ingress transport decision — file-drop, not a bound HTTP port.** The roadmap allows "file-drop *or* a 127.0.0.1-bound endpoint". A watched directory has **no network surface at all**, is the strongest possible reading of CLAUDE.md's "no internet-reachable order path", and is trivially offline-deterministic (no FastAPI/uvicorn, no socket, no async). 2c uses the file-drop.
 
+> **2c-W addendum (webhook ingress).** A later increment adds an authenticated, enqueue-only HTTP **producer** (`autotrader/signals/webhook.py`, behind ngrok) that writes validated `RoutineSignalPayload`s into this same inbox. The file-drop is **retained as the durable hand-off boundary** between the internet-facing receiver (no broker handle, no SDK) and the broker-connected trader (which still consumes via `SignalInbox.poll()` → risk core). They compose; the order path stays local. See `RUNBOOK.md` §12b and the CLAUDE.md "no internet order path" rule for the H1-mitigation decision record.
+
 **Deliberately deferred to Phase 3 / later:** stop-consolidation protocol (cancel-old-before-new when a position's qty changes — Phase 3 §4.3), catalyst-driven logic, `hard_stops` execution (validated and carried by the payload but not acted on), dashboard read-wiring, ex-dividend logic (Phase 4). 2c attaches **one** trailing stop per entry (flat→long); refreshing/consolidating stops on pyramiding is Phase 3.
 
 ---
