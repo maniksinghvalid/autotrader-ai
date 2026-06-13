@@ -58,6 +58,15 @@ class MoomooBroker(Broker):
     def is_ready(self) -> bool:
         return self._trade is not None and self._quote is not None
 
+    def heartbeat(self) -> bool:  # pragma: no cover — live OpenD path
+        if self._quote is None:
+            return False
+        try:
+            ret, _ = self._quote.get_global_state()
+        except Exception:
+            return False
+        return self._ok(ret)
+
     def close(self) -> None:
         self._c.safe_close(self._trade)
         self._c.safe_close(self._quote)

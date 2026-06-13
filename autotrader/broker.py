@@ -11,6 +11,12 @@ from autotrader.domain import AccountSnapshot, Fill, OrderAck, OrderRequest
 class Broker:
     def connect(self) -> None: raise NotImplementedError
     def is_ready(self) -> bool: raise NotImplementedError
+
+    def heartbeat(self) -> bool:
+        """Liveness probe for the watchdog. Defaults to is_ready(); MoomooBroker
+        overrides with an active OpenD query."""
+        return self.is_ready()
+
     def get_quote(self, symbol: str) -> Optional[float]: raise NotImplementedError
     def place_order(self, req: OrderRequest) -> OrderAck: raise NotImplementedError
     def cancel_order(self, broker_order_id: str) -> None: raise NotImplementedError

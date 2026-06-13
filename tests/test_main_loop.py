@@ -113,3 +113,46 @@ def test_tick_records_signal_and_trade_to_db(tmp_path):
     perf_count = db._conn.execute("SELECT COUNT(*) FROM performance").fetchone()[0]
     assert perf_count == 1, "performance snapshot must be recorded"
     db.close()
+
+
+def test_entry_gate_blocks_buy_when_closed(tmp_path):
+    from autotrader.lifecycle import EntryGate
+    b = SimBroker(quotes={"US.AAPL": 101.0}, cash=100000.0)
+    strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=100.0,
+                                             stop_loss_pct=0.05, take_profit_pct=0.10,
+                                             confidence=0.7))
+    eng = TradeEngine(broker=b, strategy=strat, cfg=_cfg(), order_qty=10,
+                      audit_path=str(tmp_path / "audit.jsonl"),
+                      entry_gate=EntryGate(enabled=False))
+    result = eng.tick()
+    assert result.action == "ENTRY_CLOSED"
+    assert b.get_account().position_qty("US.AAPL") == 0
+
+
+def test_entry_gate_allows_buy_when_open(tmp_path):
+    from autotrader.lifecycle import EntryGate
+    b = SimBroker(quotes={"US.AAPL": 101.0}, cash=100000.0)
+    strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=100.0,
+                                             stop_loss_pct=0.05, take_profit_pct=0.10,
+                                             confidence=0.7))
+    eng = TradeEngine(broker=b, strategy=strat, cfg=_cfg(), order_qty=10,
+                      audit_path=str(tmp_path / "audit.jsonl"),
+                      entry_gate=EntryGate(enabled=True))
+    assert eng.tick().action == "ORDER_PLACED"
+
+
+def test_entry_gate_allows_sell_exit_even_when_closed(tmp_path):
+    from autotrader.lifecycle import EntryGate
+    from autotrader.domain import OrderRequest
+    b = SimBroker(quotes={"US.AAPL": 94.0}, cash=100000.0)
+    b.place_order(OrderRequest(symbol="US.AAPL", side="BUY", qty=10,
+                               order_type="LIMIT", limit_price=120.0,
+                               client_order_id="setup-cid"))
+    strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=999.0,
+                                             stop_loss_pct=0.05, take_profit_pct=0.10,
+                                             confidence=0.7))
+    eng = TradeEngine(broker=b, strategy=strat, cfg=_cfg(), order_qty=1,
+                      audit_path=str(tmp_path / "audit.jsonl"),
+                      entry_gate=EntryGate(enabled=False))  # entries CLOSED
+    # quote 94 < stop 114 -> SELL exit; gate must NOT block exits
+    assert eng.tick().action == "ORDER_PLACED"

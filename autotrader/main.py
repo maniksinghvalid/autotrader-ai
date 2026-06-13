@@ -18,6 +18,7 @@ from autotrader.strategies.threshold import ThresholdStrategy
 
 if TYPE_CHECKING:
     from autotrader.db import DB
+    from autotrader.lifecycle import EntryGate
 
 logger = logging.getLogger("autotrader.engine")
 
@@ -30,7 +31,8 @@ class TickResult:
 
 class TradeEngine:
     def __init__(self, broker: Broker, strategy: ThresholdStrategy, cfg: RiskConfig,
-                 order_qty: int, audit_path: str, db: "Optional[DB]" = None):
+                 order_qty: int, audit_path: str, db: "Optional[DB]" = None,
+                 entry_gate: "Optional[EntryGate]" = None):
         self._b = broker
         self._strat = strategy
         self._cfg = cfg
@@ -38,6 +40,7 @@ class TradeEngine:
         self._router = OrderRouter(broker, audit_path=audit_path)
         self._signal_seq = 0
         self._db = db
+        self._gate = entry_gate
 
     def tick(self) -> TickResult:
         snap = self._b.get_account()
@@ -53,6 +56,12 @@ class TradeEngine:
 
         if signal.confidence < self._cfg.min_confidence:
             return TickResult("DROPPED_LOW_CONFIDENCE", f"{signal.confidence}")
+
+        # Entry-window gate: block NEW entries (BUY) when closed; exits (SELL)
+        # are never gated — you must always be able to flatten.
+        if (signal.direction == "BUY" and self._gate is not None
+                and not self._gate.entries_enabled):
+            return TickResult("ENTRY_CLOSED", signal.symbol)
 
         if self._db:
             self._db.record_performance(
