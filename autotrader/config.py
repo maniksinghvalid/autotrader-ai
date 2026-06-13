@@ -18,6 +18,7 @@ class RiskConfig:
     daily_loss_limit: float     # positive number; halt when day_pnl <= -limit
     max_gross_exposure: float
     allowed_symbols: FrozenSet[str]
+    trailing_stop_pct: float = 0.0   # 0 disables broker-resting stops; e.g. 5.0 = 5%
 
 
 def _f(name: str, default: float) -> float:
@@ -40,4 +41,5 @@ def load_risk_config() -> RiskConfig:
         daily_loss_limit=_f("RISK_DAILY_LOSS_LIMIT", 500),
         max_gross_exposure=_f("RISK_MAX_GROSS_EXPOSURE", 50000),
         allowed_symbols=symbols,
+        trailing_stop_pct=_f("RISK_TRAILING_STOP_PCT", 0.0),
     )

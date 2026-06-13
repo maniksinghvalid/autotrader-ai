@@ -28,3 +28,10 @@ def test_loader_parses_symbols_and_live_requires_explicit_flag(monkeypatch):
     cfg = load_risk_config()
     assert cfg.allowed_symbols == frozenset({"US.AAPL", "US.MSFT", "US.NIO"})
     assert cfg.trading_env == "LIVE"  # normalized uppercase; routing is enforced in risk_core
+
+
+def test_loader_reads_trailing_stop_pct(monkeypatch):
+    monkeypatch.delenv("RISK_TRAILING_STOP_PCT", raising=False)
+    assert load_risk_config().trailing_stop_pct == 0.0   # disabled by default
+    monkeypatch.setenv("RISK_TRAILING_STOP_PCT", "5.0")
+    assert load_risk_config().trailing_stop_pct == 5.0

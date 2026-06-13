@@ -8,6 +8,10 @@ RISK_MAX_POSITION_QTY=100
 RISK_DAILY_LOSS_LIMIT=500
 RISK_MAX_GROSS_EXPOSURE=10000
 RISK_ALLOWED_SYMBOLS=US.AAPL,US.MSFT,US.NIO
+# Broker-resting trailing-stop percent attached on each BUY entry (Phase 2c).
+# 0 disables; 5.0 = a 5% trailing stop that survives an OpenD outage (research R5).
+# Risk-limit CHANGES require explicit human review (CLAUDE.md).
+RISK_TRAILING_STOP_PCT=5.0
 
 # Path for the SQLite WAL projection. Default: ~/.autotrader.db
 # AUTOTRADER_DB_PATH=~/.autotrader.db
