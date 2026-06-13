@@ -156,3 +156,63 @@ def test_entry_gate_allows_sell_exit_even_when_closed(tmp_path):
                       entry_gate=EntryGate(enabled=False))  # entries CLOSED
     # quote 94 < stop 114 -> SELL exit; gate must NOT block exits
     assert eng.tick().action == "ORDER_PLACED"
+
+
+def test_submit_external_signal_routes_and_places(tmp_path):
+    from autotrader.domain import Signal
+    b = SimBroker(quotes={"US.AAPL": 101.0}, cash=100000.0)
+    eng = _engine(b, tmp_path=tmp_path)   # no entry gate -> BUY allowed
+    res = eng.submit_external_signal(
+        Signal(symbol="US.AAPL", direction="BUY", confidence=0.9, rationale="ext"))
+    assert res.action == "ORDER_PLACED"
+    assert b.get_account().position_qty("US.AAPL") == 10
+
+
+def test_submit_external_signal_blocked_by_entry_gate(tmp_path):
+    from autotrader.domain import Signal
+    from autotrader.lifecycle import EntryGate
+    b = SimBroker(quotes={"US.AAPL": 101.0}, cash=100000.0)
+    strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=100.0,
+                                             stop_loss_pct=0.05, take_profit_pct=0.10,
+                                             confidence=0.7))
+    eng = TradeEngine(broker=b, strategy=strat, cfg=_cfg(), order_qty=10,
+                      audit_path=str(tmp_path / "audit.jsonl"),
+                      entry_gate=EntryGate(enabled=False))
+    res = eng.submit_external_signal(
+        Signal(symbol="US.AAPL", direction="BUY", confidence=0.9, rationale="ext"))
+    assert res.action == "ENTRY_CLOSED"
+    assert b.get_account().position_qty("US.AAPL") == 0
+
+
+def test_submit_external_signal_drops_low_confidence(tmp_path):
+    from autotrader.domain import Signal
+    b = SimBroker(quotes={"US.AAPL": 101.0}, cash=100000.0)
+    eng = _engine(b, cfg=_cfg(min_confidence=0.9), tmp_path=tmp_path)
+    res = eng.submit_external_signal(
+        Signal(symbol="US.AAPL", direction="BUY", confidence=0.5, rationale="ext"))
+    assert res.action == "DROPPED_LOW_CONFIDENCE"
+
+
+def test_buy_entry_attaches_trailing_stop(tmp_path):
+    from autotrader.db import DB
+    db = DB(str(tmp_path / "stops.db"))
+    b = SimBroker(quotes={"US.AAPL": 101.0}, cash=100000.0)
+    strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=100.0,
+                                             stop_loss_pct=0.05, take_profit_pct=0.10,
+                                             confidence=0.7))
+    eng = TradeEngine(broker=b, strategy=strat, cfg=_cfg(trailing_stop_pct=5.0),
+                      order_qty=10, audit_path=str(tmp_path / "audit.jsonl"), db=db)
+    assert eng.tick().action == "ORDER_PLACED"
+    assert b.get_account().position_qty("US.AAPL") == 10     # BUY filled
+    assert len(b.get_open_orders()) == 1                     # the resting trailing stop
+    row = db._conn.execute(
+        "SELECT side, qty FROM trades WHERE order_type='TRAILING_STOP'").fetchone()
+    assert row is not None and row[0] == "SELL" and row[1] == 10
+    db.close()
+
+
+def test_no_trailing_stop_when_disabled(tmp_path):
+    b = SimBroker(quotes={"US.AAPL": 101.0}, cash=100000.0)
+    eng = _engine(b, tmp_path=tmp_path)   # _cfg() default trailing_stop_pct=0.0
+    assert eng.tick().action == "ORDER_PLACED"
+    assert b.get_open_orders() == []      # no resting stop when disabled

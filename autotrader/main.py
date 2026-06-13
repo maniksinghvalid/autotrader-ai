@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Optional
 
 from autotrader.broker import Broker
 from autotrader.config import RiskConfig, load_risk_config
-from autotrader.domain import OrderRequest, OrderState
+from autotrader.domain import OrderRequest, OrderState, Signal
 from autotrader.risk_core import evaluate
 from autotrader.router import OrderRouter
 from autotrader.strategies.threshold import ThresholdStrategy
@@ -53,7 +53,19 @@ class TradeEngine:
         signal = self._strat.evaluate(price=price, position=pos)
         if signal is None:
             return TickResult("NO_SIGNAL")
+        return self._route_signal(signal, snap, price)
 
+    def submit_external_signal(self, signal: Signal) -> TickResult:
+        """Route a validated external signal through the SAME pipeline as a
+        strategy signal: confidence filter -> entry gate -> risk core -> router.
+        External signals NEVER bypass the risk core (research C4)."""
+        snap = self._b.get_account()
+        price = self._b.get_quote(signal.symbol)
+        if price is None:
+            return TickResult("NO_QUOTE", signal.symbol)
+        return self._route_signal(signal, snap, price)
+
+    def _route_signal(self, signal: Signal, snap, price: float) -> TickResult:
         if signal.confidence < self._cfg.min_confidence:
             return TickResult("DROPPED_LOW_CONFIDENCE", f"{signal.confidence}")
 
@@ -80,10 +92,11 @@ class TradeEngine:
                 signal_id=signal_id,
             )
 
-        # SELL exits must liquidate the full position; BUY uses the configured order_qty.
-        sell_qty = pos.qty if (signal.direction == "SELL" and pos is not None) else self._qty
-        cid = OrderRouter.make_client_order_id(signal.symbol, signal.direction, sell_qty, signal_id)
-        req = OrderRequest(symbol=signal.symbol, side=signal.direction, qty=sell_qty,
+        # SELL exits liquidate the full position; BUY uses the configured order_qty.
+        pos = next((p for p in snap.positions if p.symbol == signal.symbol), None)
+        eff_qty = pos.qty if (signal.direction == "SELL" and pos is not None) else self._qty
+        cid = OrderRouter.make_client_order_id(signal.symbol, signal.direction, eff_qty, signal_id)
+        req = OrderRequest(symbol=signal.symbol, side=signal.direction, qty=eff_qty,
                            order_type="MARKET", limit_price=None, client_order_id=cid)
 
         decision = evaluate(req, snap, self._cfg, ref_price=price)
@@ -94,20 +107,46 @@ class TradeEngine:
         ack = self._router.submit(req)
         if self._db:
             self._db.record_trade(
-                client_order_id=ack.client_order_id,
-                symbol=req.symbol,
-                side=req.side,
-                qty=req.qty,
-                order_type=req.order_type,
-                limit_price=req.limit_price,
-                broker_order_id=ack.broker_order_id,
-                state=ack.state.value,
+                client_order_id=ack.client_order_id, symbol=req.symbol, side=req.side,
+                qty=req.qty, order_type=req.order_type, limit_price=req.limit_price,
+                broker_order_id=ack.broker_order_id, state=ack.state.value,
             )
         if ack.state is OrderState.UNKNOWN:
             return TickResult("ORDER_UNKNOWN", ack.client_order_id)
         if ack.state is OrderState.REJECTED:
             return TickResult("ORDER_REJECTED", ack.client_order_id)
+
+        # Broker-resting trailing stop: attach a protective TRAILING_STOP SELL
+        # right after a BUY entry places (research R5 — survives an OpenD outage).
+        if signal.direction == "BUY" and self._cfg.trailing_stop_pct > 0:
+            self._attach_trailing_stop(signal.symbol, eff_qty, price, signal_id)
         return TickResult("ORDER_PLACED", str(ack.broker_order_id))
+
+    def _attach_trailing_stop(self, symbol: str, qty: int, ref_price: float,
+                              entry_signal_id: str) -> None:
+        """Place a broker-resting TRAILING_STOP SELL for `qty` shares through the
+        SAME audited risk path. Idempotent: the client_order_id is derived from
+        the entry's signal id, so re-attaching for the same entry dedupes at the
+        router. A rejected stop is logged, never fatal to the entry. Stop
+        consolidation on qty changes (pyramiding) is Phase 3."""
+        snap = self._b.get_account()  # reflect the just-placed position for the long-only check
+        cid = OrderRouter.make_client_order_id(symbol, "SELL", qty, f"{entry_signal_id}-stop")
+        req = OrderRequest(symbol=symbol, side="SELL", qty=qty, order_type="TRAILING_STOP",
+                           limit_price=None, client_order_id=cid,
+                           trail_percent=self._cfg.trailing_stop_pct)
+        decision = evaluate(req, snap, self._cfg, ref_price=ref_price)
+        if not decision.approved:
+            logger.warning("trailing stop NOT attached for %s: %s", symbol, decision.reason)
+            return
+        ack = self._router.submit(req)
+        if self._db:
+            self._db.record_trade(
+                client_order_id=ack.client_order_id, symbol=req.symbol, side=req.side,
+                qty=req.qty, order_type=req.order_type, limit_price=req.limit_price,
+                broker_order_id=ack.broker_order_id, state=ack.state.value,
+            )
+        logger.info("trailing stop attached: %s SELL %d @ %.1f%% trail",
+                    symbol, qty, self._cfg.trailing_stop_pct)
 
     def shutdown(self) -> None:
         # Cancel-on-shutdown (CLAUDE.md). Best-effort flatten of working orders:
