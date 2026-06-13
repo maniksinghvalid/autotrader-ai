@@ -11,3 +11,6 @@ RISK_ALLOWED_SYMBOLS=US.AAPL,US.MSFT,US.NIO
 
 # Path for the SQLite WAL projection. Default: ~/.autotrader.db
 # AUTOTRADER_DB_PATH=~/.autotrader.db
+
+# Continuous-loop iteration interval in seconds (Phase 2b). Default: 5
+# AUTOTRADER_LOOP_INTERVAL=5

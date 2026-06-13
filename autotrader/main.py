@@ -124,6 +124,7 @@ class TradeEngine:
 def main() -> int:  # pragma: no cover — live entrypoint, covered by manual run
     import os
     import sys
+    import time
     from autotrader.strategies.threshold import StrategyParams
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -154,11 +155,36 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
     from autotrader.db import DB  # lazy import: keeps tests that skip main() SDK-free
     db = DB(db_path)
     logger.info("DB projection at %s", db_path)
+    from autotrader.clock import Clock
+    from autotrader.lifecycle import EntryGate, ground_truth_sync
+    from autotrader.scheduler import LifecycleScheduler
+    from autotrader.watchdog import Watchdog
+    from autotrader.runner import SessionRunner
+
+    gate = EntryGate(enabled=False)  # entries open at 09:45 via the scheduler
     engine = TradeEngine(broker, strat, cfg, order_qty=int(os.getenv("ORDER_QTY", "1")),
-                         audit_path=audit, db=db)
+                         audit_path=audit, db=db, entry_gate=gate)
+    watchdog = Watchdog(
+        health_check=broker.heartbeat,
+        reconcile=lambda: ground_truth_sync(broker, db),
+        sleep=time.sleep,
+    )
+    runner = SessionRunner(
+        engine=engine, broker=broker, db=db, gate=gate,
+        scheduler=LifecycleScheduler(), watchdog=watchdog, clock=Clock(),
+        sleep=time.sleep,
+        loop_interval=float(os.getenv("AUTOTRADER_LOOP_INTERVAL", "5")),
+    )
+
+    stopped = {"flag": False}
+
+    def _stop() -> bool:
+        return stopped["flag"]
+
     try:
-        result = engine.tick()  # v1: single deterministic tick; loop added in Phase 2
-        logger.info("tick result: %s %s", result.action, result.detail)
+        runner.run(stop=_stop)        # runs until KeyboardInterrupt
+    except KeyboardInterrupt:
+        logger.info("interrupt received — shutting down")
     finally:
         # Always disconnect, even if cancel-on-shutdown raises — a failed
         # cancel_all must not leak the OpenD connection.
