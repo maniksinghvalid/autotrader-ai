@@ -161,6 +161,23 @@ Normalization rules:
 
 After each poll the file is moved to `inbox/processed/` (valid) or `inbox/rejected/` (malformed — a bad file never crashes the loop). External signals are only polled while the watchdog is healthy and route through the **same** risk core + audited router as strategy signals.
 
+### 6a. Ticker-sweep adapter
+
+The `trade-routine` skill emits a daily **ticker sweep** (`docs/routinesignal-ticker.json`) in a *different* dialect (`run_id` / `sweep_date` / `from_signal`→`to_signal` / `composite_score` / `direction: "upgrade"|"downgrade"`). That shape is **rejected** by the ingress as-is — convert it first:
+
+```bash
+export AUTOTRADER_SIGNAL_INBOX=~/.autotrader_inbox
+export RISK_ALLOWED_SYMBOLS=US.DIVO,CA.VDY,US.YNVDA      # qualified codes
+python3 -m autotrader.signals.routine_adapter routinesignal-ticker.json   # or: cat … | python3 -m … -
+```
+
+It drops one canonical `RoutineSignalPayload` into the inbox (or pipe its stdout to the signed webhook curl below). Mapping:
+- **Direction from the destination label** (not the up/down field): `BUY`/`STRONG BUY` → UP (entry); `CAUTION`/`AVOID` → DOWN (exit); `HOLD`/`NEUTRAL` and unknown labels → **skipped** (so an "upgrade to NEUTRAL" never buys).
+- **Exits always clear the confidence filter:** SELL gets `points_delta = -10` (confidence 1.0) so a low-score `AVOID` is never dropped; BUY scales as `round(composite_score/10)`.
+- **Symbols qualified against `RISK_ALLOWED_SYMBOLS`** (bare `VDY` → `CA.VDY`); unknown/ambiguous tickers are skipped with a warning.
+
+Exit codes: `0` ok (incl. 0 actionable → nothing enqueued), `1` bad input JSON, `2` `AUTOTRADER_SIGNAL_INBOX` unset. The adapter is SDK-free and never touches OpenD.
+
 ---
 
 ## 7. Trailing stops
@@ -279,6 +296,15 @@ curl -sS -X POST https://unthawed-keshia-unplenteously.ngrok-free.dev/webhook/sw
 `GET /healthz` is unauthenticated and returns `{"status":"ok"}` for liveness checks.
 
 **Payload** = the same `RoutineSignalPayload` as the file-drop (§6): `ticker` UP→BUY / DOWN→SELL, normalized to `US.<TICKER>`, confidence from `|points_delta|/10`. The symbol must be in `RISK_ALLOWED_SYMBOLS`.
+
+**Rejected payloads (400) are preserved, not lost.** A request that authenticates but fails schema validation returns `400` with the offending fields named, e.g.:
+
+```json
+{"error":"invalid payload","detail":[{"loc":"hard_stops.ticker","msg":"Input should be a valid number..."},
+                                      {"loc":"catalysts.0.value","msg":"Field required"}]}
+```
+
+The exact rejected body is atomically quarantined to `<inbox>/rejected/` (mirroring the file-drop's `rejected/`), so you can inspect the `detail`, fix the producer, and replay it. The `detail` is only returned **after** auth passes, so it never leaks the schema to unauthenticated callers. Validation is never relaxed — a bad payload is captured and explained, never enqueued. (`hard_stops` must be a flat `{symbol: price}` map and every `catalyst` needs a numeric `value` — the two most common producer mistakes.)
 
 **Security notes:**
 - The secret lives in `config/secure.config` only (gitignored — see `config/secure.config.example`). Generate it with `python3 -c "import secrets;print(secrets.token_urlsafe(32))"` and rotate it periodically.

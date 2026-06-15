@@ -70,22 +70,34 @@ def test_valid_request_enqueues_and_returns_202(tmp_path):
     assert not list(inbox.glob("*.part"))          # no partial temp left behind
 
 
-def test_invalid_schema_is_400_and_writes_nothing(tmp_path):
+def test_invalid_schema_is_400_with_detail_and_quarantined(tmp_path):
     c, inbox = _client(tmp_path)
     bad = json.dumps({"routine_id": "r1", "timestamp": "2026-06-13T09:46:00-04:00",
                       "signal_changes": [{"ticker": "AAPL", "direction": "SIDEWAYS",
                                           "points_delta": 1}]}).encode()
     r = c.post("/webhook/sweep", data=bad, headers=_headers(body=bad))
     assert r.status_code == 400
+    body = r.get_json()
+    assert body["error"] == "invalid payload"
+    # field-level detail names the offending location
+    locs = " ".join(d["loc"] for d in body["detail"])
+    assert "direction" in locs
+    # nothing enqueued for the trader, but the body is preserved for replay
     assert list(inbox.glob("*.json")) == []
+    rej = list((inbox / "rejected").glob("*.json"))
+    assert len(rej) == 1 and rej[0].read_bytes() == bad
+    assert not list((inbox / "rejected").glob("*.part"))
 
 
-def test_malformed_json_is_400_and_writes_nothing(tmp_path):
+def test_malformed_json_is_400_with_detail_and_quarantined(tmp_path):
     c, inbox = _client(tmp_path)
     bad = b"{not valid json"
     r = c.post("/webhook/sweep", data=bad, headers=_headers(body=bad))
     assert r.status_code == 400
+    assert r.get_json()["error"] == "invalid payload"
     assert list(inbox.glob("*.json")) == []
+    rej = list((inbox / "rejected").glob("*.json"))
+    assert len(rej) == 1 and rej[0].read_bytes() == bad
 
 
 def test_oversized_body_is_413(tmp_path):

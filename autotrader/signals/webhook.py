@@ -37,11 +37,11 @@ def _verify(secret: str, raw: bytes, token: Optional[str], signature: Optional[s
     return hmac.compare_digest(signature, expected)
 
 
-def _atomic_enqueue(inbox_dir: Path, raw: bytes) -> Path:
-    """Write raw bytes to a unique *.json via temp(.part)->rename, so a concurrent
-    SignalInbox.poll() (which globs top-level *.json) never sees a partial file."""
-    inbox_dir.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(inbox_dir), prefix=".wh-", suffix=".json.part")
+def _atomic_write(dest_dir: Path, raw: bytes, prefix: str) -> Path:
+    """Write raw bytes to a unique <prefix><uuid>.json via temp(.part)->rename, so a
+    concurrent reader globbing top-level *.json never sees a partial file."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(dest_dir), prefix="." + prefix, suffix=".json.part")
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(raw)
@@ -50,9 +50,21 @@ def _atomic_enqueue(inbox_dir: Path, raw: bytes) -> Path:
     except Exception:
         os.unlink(tmp)
         raise
-    final = inbox_dir / f"wh-{uuid.uuid4().hex}.json"
+    final = dest_dir / f"{prefix}{uuid.uuid4().hex}.json"
     os.replace(tmp, final)  # atomic on POSIX
     return final
+
+
+def _atomic_enqueue(inbox_dir: Path, raw: bytes) -> Path:
+    """Enqueue a VALID body into the inbox root for SignalInbox.poll() to consume."""
+    return _atomic_write(inbox_dir, raw, "wh-")
+
+
+def _quarantine(inbox_dir: Path, raw: bytes) -> Path:
+    """Preserve a REJECTED body in <inbox>/rejected/ (mirrors SignalInbox's rejected/
+    pattern). poll() globs only the inbox root, so a quarantined file is never consumed —
+    it's kept solely so a malformed payload is inspectable and replayable, never lost."""
+    return _atomic_write(inbox_dir / "rejected", raw, "rej-")
 
 
 def create_app(inbox_dir: str, secret: str, max_body: int = _MAX_BODY_DEFAULT) -> Flask:
@@ -75,8 +87,13 @@ def create_app(inbox_dir: str, secret: str, max_body: int = _MAX_BODY_DEFAULT) -
         try:
             payload = RoutineSignalPayload.model_validate_json(raw)  # bad JSON or schema -> 400
         except ValidationError as e:
-            logger.warning("webhook payload rejected: %s", e)
-            return jsonify({"error": "invalid payload"}), 400
+            # Strict rejection (never relaxed), but the body is PRESERVED for diagnosis +
+            # replay, and the caller (already authenticated) gets field-level reasons back.
+            qpath = _quarantine(inbox, raw)
+            logger.warning("webhook payload rejected, quarantined %s: %s", qpath.name, e)
+            detail = [{"loc": ".".join(str(p) for p in err["loc"]), "msg": err["msg"]}
+                      for err in e.errors()]
+            return jsonify({"error": "invalid payload", "detail": detail}), 400
         path = _atomic_enqueue(inbox, raw)
         logger.info("webhook enqueued %s (routine_id=%s, %d change(s))",
                     path.name, payload.routine_id, len(payload.signal_changes))

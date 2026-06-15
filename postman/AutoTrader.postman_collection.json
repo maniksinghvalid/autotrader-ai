@@ -1,0 +1,367 @@
+{
+  "info": {
+    "_postman_id": "a17b9d2e-0c41-4f8a-9b22-autotrader0001",
+    "name": "AutoTrader",
+    "description": "AutoTrader HTTP surfaces.\n\n- **Webhook ingress** (autotrader/signals/webhook.py, default 127.0.0.1:8799): authenticated, enqueue-only. POST /webhook/sweep needs X-Webhook-Token (shared secret) AND X-Webhook-Signature = 'sha256=' + HMAC-SHA256(secret, raw body). 'signed' requests compute that automatically via a CryptoJS pre-request script.\n- **Dashboard** (dashboard/server.py, default 127.0.0.1:8787): read-only GETs, gated on OpenD readiness (503 until ready).\n\nSet `webhook_secret` in the AutoTrader environment (== AUTOTRADER_WEBHOOK_SECRET).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Webhook ingress",
+      "item": [
+        {
+          "name": "Health \u2014 GET /healthz",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('status ok', () => pm.expect(pm.response.json().status).to.eql('ok'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{webhook_base_url}}/healthz",
+              "host": [
+                "{{webhook_base_url}}"
+              ],
+              "path": [
+                "healthz"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Submit sweep \u2014 signed (202)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Auto-sign the webhook request: X-Webhook-Token + HMAC-SHA256 of the RAW body.",
+                  "// Server (autotrader/signals/webhook.py) compares the signature constant-time over",
+                  "// the exact bytes it receives, so we hash the variable-resolved body.",
+                  "const secret = pm.environment.get('webhook_secret') || pm.collectionVariables.get('webhook_secret') || '';",
+                  "if (!secret) { console.warn('webhook_secret is empty -- set it in the AutoTrader environment'); }",
+                  "const raw  = (pm.request.body && pm.request.body.raw) ? pm.request.body.raw : '';",
+                  "const body = pm.variables.replaceIn(raw);",
+                  "const sig  = 'sha256=' + CryptoJS.HmacSHA256(body, secret).toString(CryptoJS.enc.Hex);",
+                  "pm.request.headers.upsert({ key: 'X-Webhook-Token', value: secret });",
+                  "pm.request.headers.upsert({ key: 'X-Webhook-Signature', value: sig });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "pm.test('accepted + echoes signal count', () => {",
+                  "  const j = pm.response.json();",
+                  "  pm.expect(j.status).to.eql('accepted');",
+                  "  pm.expect(j.signals).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"routine_id\": \"routine-20260615-1134-20219d\",\n  \"timestamp\": \"2026-06-15T11:34:00\",\n  \"signal_changes\": [\n    {\n      \"ticker\": \"US.DIVO\",\n      \"direction\": \"UP\",\n      \"transition\": [\n        \"HOLD\",\n        \"BUY\"\n      ],\n      \"points_delta\": 7,\n      \"driver\": \"ticker sweep (score 71)\"\n    },\n    {\n      \"ticker\": \"CA.VDY\",\n      \"direction\": \"UP\",\n      \"transition\": [\n        \"HOLD\",\n        \"BUY\"\n      ],\n      \"points_delta\": 8,\n      \"driver\": \"ticker sweep (score 77)\"\n    },\n    {\n      \"ticker\": \"US.YNVDA\",\n      \"direction\": \"DOWN\",\n      \"transition\": [\n        \"CAUTION\",\n        \"AVOID\"\n      ],\n      \"points_delta\": -10,\n      \"driver\": \"ticker sweep (score 22)\"\n    }\n  ],\n  \"hard_stops\": {},\n  \"catalysts\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{webhook_base_url}}/webhook/sweep",
+              "host": [
+                "{{webhook_base_url}}"
+              ],
+              "path": [
+                "webhook",
+                "sweep"
+              ]
+            },
+            "description": "Canonical RoutineSignalPayload. Pre-request script computes the HMAC signature."
+          }
+        },
+        {
+          "name": "Submit sweep \u2014 raw producer dialect, expect 400",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Auto-sign the webhook request: X-Webhook-Token + HMAC-SHA256 of the RAW body.",
+                  "// Server (autotrader/signals/webhook.py) compares the signature constant-time over",
+                  "// the exact bytes it receives, so we hash the variable-resolved body.",
+                  "const secret = pm.environment.get('webhook_secret') || pm.collectionVariables.get('webhook_secret') || '';",
+                  "if (!secret) { console.warn('webhook_secret is empty -- set it in the AutoTrader environment'); }",
+                  "const raw  = (pm.request.body && pm.request.body.raw) ? pm.request.body.raw : '';",
+                  "const body = pm.variables.replaceIn(raw);",
+                  "const sig  = 'sha256=' + CryptoJS.HmacSHA256(body, secret).toString(CryptoJS.enc.Hex);",
+                  "pm.request.headers.upsert({ key: 'X-Webhook-Token', value: secret });",
+                  "pm.request.headers.upsert({ key: 'X-Webhook-Signature', value: sig });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Correctly signed (auth passes) but the body is the producer's native ticker-sweep",
+                  "// dialect (run_id/sweep_date/composite_score/upgrade), which the strict schema rejects.",
+                  "// Convert with `python3 -m autotrader.signals.routine_adapter` before sending.",
+                  "pm.test('400 invalid payload', () => pm.response.to.have.status(400));",
+                  "pm.test('error is invalid payload', () => pm.expect(pm.response.json().error).to.eql('invalid payload'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"run_id\": \"routine-20260615-1134-20219d\",\n  \"sweep_date\": \"2026-06-15\",\n  \"ticker_count\": 14,\n  \"signal_changes\": [\n    {\n      \"ticker\": \"DIVO\",\n      \"from_signal\": \"HOLD\",\n      \"to_signal\": \"BUY\",\n      \"composite_score\": 71,\n      \"price\": 45.35,\n      \"direction\": \"upgrade\"\n    },\n    {\n      \"ticker\": \"VDY\",\n      \"from_signal\": \"HOLD\",\n      \"to_signal\": \"BUY\",\n      \"composite_score\": 77,\n      \"price\": 74.55,\n      \"direction\": \"upgrade\"\n    },\n    {\n      \"ticker\": \"YNVDA\",\n      \"from_signal\": \"CAUTION\",\n      \"to_signal\": \"AVOID\",\n      \"composite_score\": 22,\n      \"price\": 14.15,\n      \"direction\": \"downgrade\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{webhook_base_url}}/webhook/sweep",
+              "host": [
+                "{{webhook_base_url}}"
+              ],
+              "path": [
+                "webhook",
+                "sweep"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Submit sweep \u2014 bad signature, expect 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Webhook-Token",
+                "value": "{{webhook_secret}}"
+              },
+              {
+                "key": "X-Webhook-Signature",
+                "value": "sha256=deadbeef"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"routine_id\": \"routine-20260615-1134-20219d\",\n  \"timestamp\": \"2026-06-15T11:34:00\",\n  \"signal_changes\": [\n    {\n      \"ticker\": \"US.DIVO\",\n      \"direction\": \"UP\",\n      \"transition\": [\n        \"HOLD\",\n        \"BUY\"\n      ],\n      \"points_delta\": 7,\n      \"driver\": \"ticker sweep (score 71)\"\n    },\n    {\n      \"ticker\": \"CA.VDY\",\n      \"direction\": \"UP\",\n      \"transition\": [\n        \"HOLD\",\n        \"BUY\"\n      ],\n      \"points_delta\": 8,\n      \"driver\": \"ticker sweep (score 77)\"\n    },\n    {\n      \"ticker\": \"US.YNVDA\",\n      \"direction\": \"DOWN\",\n      \"transition\": [\n        \"CAUTION\",\n        \"AVOID\"\n      ],\n      \"points_delta\": -10,\n      \"driver\": \"ticker sweep (score 22)\"\n    }\n  ],\n  \"hard_stops\": {},\n  \"catalysts\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{webhook_base_url}}/webhook/sweep",
+              "host": [
+                "{{webhook_base_url}}"
+              ],
+              "path": [
+                "webhook",
+                "sweep"
+              ]
+            },
+            "description": "No signing script \u2014 deliberately wrong signature. Constant-time HMAC check rejects."
+          }
+        },
+        {
+          "name": "Submit sweep \u2014 wrong method GET, expect 405",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('405 Method Not Allowed', () => pm.response.to.have.status(405));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{webhook_base_url}}/webhook/sweep",
+              "host": [
+                "{{webhook_base_url}}"
+              ],
+              "path": [
+                "webhook",
+                "sweep"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Dashboard (read-only)",
+      "item": [
+        {
+          "name": "GET /api/health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 when OpenD ready, else 503', () => pm.expect([200,503]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{dashboard_base_url}}/api/health",
+              "host": [
+                "{{dashboard_base_url}}"
+              ],
+              "path": [
+                "api",
+                "health"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /api/accounts",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200/502/503', () => pm.expect([200,502,503]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{dashboard_base_url}}/api/accounts",
+              "host": [
+                "{{dashboard_base_url}}"
+              ],
+              "path": [
+                "api",
+                "accounts"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /api/snapshot",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200/404/502/503', () => pm.expect([200,404,502,503]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{dashboard_base_url}}/api/snapshot?acc_id=&market=",
+              "host": [
+                "{{dashboard_base_url}}"
+              ],
+              "path": [
+                "api",
+                "snapshot"
+              ],
+              "query": [
+                {
+                  "key": "acc_id",
+                  "value": "",
+                  "disabled": true
+                },
+                {
+                  "key": "market",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "webhook_base_url",
+      "value": "http://127.0.0.1:8799"
+    },
+    {
+      "key": "dashboard_base_url",
+      "value": "http://127.0.0.1:8787"
+    },
+    {
+      "key": "webhook_secret",
+      "value": ""
+    }
+  ]
+}
