@@ -7,6 +7,9 @@ quarantined, never crashing the loop. Imports pydantic + domain only — no SDK.
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
+import uuid
 from pathlib import Path
 from typing import List
 
@@ -17,6 +20,27 @@ from autotrader.signals.normalize import normalize_payload
 from autotrader.signals.schema import RoutineSignalPayload
 
 logger = logging.getLogger("autotrader.signals.inbox")
+
+
+def atomic_write_bytes(inbox_dir: Path, raw: bytes) -> Path:
+    """Write raw bytes to a unique top-level *.json via temp(.part)->os.replace,
+    so a concurrent poll() (which globs *.json) never observes a partial file.
+    Shared by the file-drop adapter; the webhook keeps its own copy so it stays
+    a self-contained, SDK-free security surface."""
+    inbox_dir = Path(inbox_dir)
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(inbox_dir), prefix=".drop-", suffix=".json.part")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(raw)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        os.unlink(tmp)
+        raise
+    final = inbox_dir / f"drop-{uuid.uuid4().hex}.json"
+    os.replace(tmp, final)  # atomic on POSIX
+    return final
 
 
 class SignalInbox:
