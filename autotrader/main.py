@@ -174,6 +174,81 @@ class TradeEngine:
         logger.info("trailing stop attached: %s SELL %d @ %.1f%% trail",
                     symbol, qty, self._cfg.trailing_stop_pct)
 
+    def submit_rebalance_order(self, trade, ref_price: float, round_id: str):
+        """Route a rebalance trim/top-up through the SAME audited path as any
+        order: risk_core -> OrderRouter -> db. Honors the entry gate for BUY
+        top-ups and the session halt; allows EXPLICIT partial SELL qty (it does
+        not apply tick()'s 'SELL = full position' shortcut)."""
+        if self._gate is not None and self._gate.halted:
+            return TickResult("HALTED", trade.symbol)
+        if (trade.side == "BUY" and self._gate is not None
+                and not self._gate.entries_enabled):
+            return TickResult("ENTRY_CLOSED", trade.symbol)
+        snap = self._b.get_account()
+        cid = OrderRouter.make_client_order_id(
+            trade.symbol, trade.side, trade.qty, f"{round_id}-rbal")
+        req = OrderRequest(symbol=trade.symbol, side=trade.side, qty=trade.qty,
+                           order_type="MARKET", limit_price=None,
+                           client_order_id=cid)
+        decision = evaluate(req, snap, self._cfg, ref_price=ref_price)
+        if not decision.approved:
+            logger.warning("rebalance rejected %s %s %d: %s", trade.side,
+                           trade.symbol, trade.qty, decision.reason)
+            return TickResult("REJECTED_BY_RISK", decision.reason)
+        ack = self._router.submit(req)
+        if self._db:
+            self._db.record_trade(
+                client_order_id=ack.client_order_id, symbol=req.symbol,
+                side=req.side, qty=req.qty, order_type=req.order_type,
+                limit_price=req.limit_price, broker_order_id=ack.broker_order_id,
+                state=ack.state.value)
+        if ack.state is OrderState.UNKNOWN:
+            return TickResult("ORDER_UNKNOWN", ack.client_order_id)
+        if ack.state is OrderState.REJECTED:
+            return TickResult("ORDER_REJECTED", ack.client_order_id)
+        return TickResult("ORDER_PLACED", str(ack.broker_order_id))
+
+    def consolidate_stop(self, symbol: str, new_total_qty: int,
+                         ref_price: float, round_id: str) -> None:
+        """Re-size the protective trailing stop after a qty change: cancel the
+        symbol's working TRAILING_STOP, then (if new_total_qty > 0) place a fresh
+        one for the full intended qty through the audited path. new_total_qty is
+        the deterministic intended post-trade qty (NOT a re-fetched snapshot), so
+        a live async fill cannot under-size the stop. The RISK eval re-fetches the
+        snapshot (like _attach_trailing_stop): on live OpenD a not-yet-filled
+        top-up makes the stop fail long-only and simply not attach this round."""
+        if self._db is None or self._cfg.trailing_stop_pct <= 0:
+            return
+        existing = self._db.get_open_trailing_stop(symbol)
+        if existing is not None:
+            try:
+                self._b.cancel_order(existing)
+            except Exception as e:
+                logger.error("consolidate_stop: cancel %s failed: %s", existing, e)
+                raise
+            self._db.mark_order_cancelled(existing)
+        if new_total_qty <= 0:
+            return
+        snap = self._b.get_account()
+        cid = OrderRouter.make_client_order_id(
+            symbol, "SELL", new_total_qty, f"{round_id}-stop")
+        req = OrderRequest(symbol=symbol, side="SELL", qty=new_total_qty,
+                           order_type="TRAILING_STOP", limit_price=None,
+                           client_order_id=cid,
+                           trail_percent=self._cfg.trailing_stop_pct)
+        decision = evaluate(req, snap, self._cfg, ref_price=ref_price)
+        if not decision.approved:
+            logger.warning("consolidated stop NOT attached for %s: %s",
+                           symbol, decision.reason)
+            return
+        ack = self._router.submit(req)
+        self._db.record_trade(
+            client_order_id=ack.client_order_id, symbol=req.symbol, side=req.side,
+            qty=req.qty, order_type=req.order_type, limit_price=req.limit_price,
+            broker_order_id=ack.broker_order_id, state=ack.state.value)
+        logger.info("stop consolidated: %s SELL %d @ %.1f%% trail",
+                    symbol, new_total_qty, self._cfg.trailing_stop_pct)
+
     def shutdown(self) -> None:
         # Cancel-on-shutdown (CLAUDE.md). Best-effort flatten of working orders:
         # a cancel failure is logged, never swallowed silently, and never masks
