@@ -15,6 +15,7 @@ EOD_FLATTEN = "EOD_FLATTEN"       # 16:15 — cancel-all + commit + halt for the
 REBALANCE = "REBALANCE"           # 12:30 — drift-band rebalance + stop consolidation
 RISK_CHECK_MID = "RISK_CHECK_MID"   # 13:30 — tiered intraday risk re-check
 RISK_CHECK_LATE = "RISK_CHECK_LATE"  # 15:00 — tiered intraday risk re-check
+EOD_REPORT = "EOD_REPORT"         # 16:30 — post session summary to Slack
 
 # Chronological order is load-bearing: poll() returns due jobs in this order.
 _SCHEDULE: Tuple[Tuple[str, time], ...] = (
@@ -25,6 +26,7 @@ _SCHEDULE: Tuple[Tuple[str, time], ...] = (
     (RISK_CHECK_LATE, time(15, 0)),
     (RISK_SWEEP, time(15, 30)),
     (EOD_FLATTEN, time(16, 15)),
+    (EOD_REPORT, time(16, 30)),
 )
 
 

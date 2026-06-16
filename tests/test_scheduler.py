@@ -52,3 +52,19 @@ def test_new_day_resets_all_jobs():
     s.poll(_dt(8, 31, day=12))   # fire PRE_OPEN_SYNC on the 12th
     assert s.poll(_dt(8, 31, day=12)) == []
     assert PRE_OPEN_SYNC in s.poll(_dt(8, 31, day=13)), "next day re-arms the jobs"
+
+
+def test_eod_report_fires_after_1630_and_once_per_day():
+    from autotrader.scheduler import LifecycleScheduler, EOD_REPORT
+    s = LifecycleScheduler()
+    s.poll(_dt(16, 20))                     # nothing new at 16:20 beyond catch-up
+    due = s.poll(_dt(16, 31))
+    assert EOD_REPORT in due
+    assert s.poll(_dt(16, 45)) == []        # does not re-fire same day
+
+
+def test_eod_report_fires_after_eod_flatten():
+    from autotrader.scheduler import LifecycleScheduler, EOD_FLATTEN, EOD_REPORT
+    s = LifecycleScheduler()
+    due = s.poll(_dt(16, 31))               # first poll catches up both, in order
+    assert due.index(EOD_FLATTEN) < due.index(EOD_REPORT)
