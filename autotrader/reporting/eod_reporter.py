@@ -101,11 +101,11 @@ class EODReporter:
     @staticmethod
     def _pnl_pct(d: ReportData) -> float:
         base = (d.total_assets or 0.0) - (d.day_pnl or 0.0)
-        return (d.day_pnl / base * 100) if base else 0.0
+        return (d.day_pnl / base * 100) if (base and d.day_pnl is not None) else 0.0
 
     @staticmethod
     def _gross_pct(d: ReportData) -> float:
-        return (d.gross_exposure / d.total_assets * 100) if d.total_assets else 0.0
+        return (d.gross_exposure / d.total_assets * 100) if (d.total_assets and d.gross_exposure is not None) else 0.0
 
     def _render(self, d: ReportData) -> dict:
         lines = [f"AutoTrader session summary — {d.date_label} ({d.trading_env})"]
