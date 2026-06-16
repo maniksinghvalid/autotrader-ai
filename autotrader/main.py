@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Optional
 from autotrader.broker import Broker
 from autotrader.config import RiskConfig, load_risk_config
 from autotrader.domain import OrderRequest, OrderState, Signal
+from autotrader.rebalance import compute_plan
 from autotrader.risk_core import evaluate
 from autotrader.router import OrderRouter
 from autotrader.sizing import size_position
@@ -44,6 +45,8 @@ class TradeEngine:
         self._gate = entry_gate
 
     def tick(self) -> TickResult:
+        if self._gate is not None and self._gate.halted:
+            return TickResult("HALTED")
         snap = self._b.get_account()
         symbol = self._strat.p.symbol
         price = self._b.get_quote(symbol)
@@ -248,6 +251,49 @@ class TradeEngine:
             broker_order_id=ack.broker_order_id, state=ack.state.value)
         logger.info("stop consolidated: %s SELL %d @ %.1f%% trail",
                     symbol, new_total_qty, self._cfg.trailing_stop_pct)
+
+    def rebalance(self, now) -> str:
+        """Midday rebalance: load the latest target snapshot, skip if disabled /
+        absent / stale, else compute a drift-band plan and execute each trade
+        through the audited path, consolidating the trailing stop per qty change.
+        `now` is the market-time clock (drives the staleness guard)."""
+        from datetime import datetime, timedelta
+        if not self._cfg.rebalance_enabled:
+            return "REBALANCE_DISABLED"
+        if self._gate is not None and self._gate.halted:
+            return "HALTED"
+        if self._db is None:
+            return "NO_TARGETS"
+        latest = self._db.latest_target_weights()
+        if latest is None:
+            return "NO_TARGETS"
+        as_of, ingested_at, scores = latest
+        age = now - datetime.fromisoformat(ingested_at)
+        if age > timedelta(hours=self._cfg.target_staleness_hours):
+            logger.info("rebalance: targets stale (age=%s) — skipping", age)
+            return "STALE_TARGETS"
+
+        snap = self._b.get_account()
+        prices = {}
+        for sym in scores:
+            q = self._b.get_quote(sym)
+            if q is not None:
+                prices[sym] = q
+        plan = compute_plan(snap, scores, prices, self._cfg)
+        round_id = f"rbal-{as_of}"
+        for sym, reason in plan.skipped:
+            logger.debug("rebalance skip %s: %s", sym, reason)
+        for trade in plan.trades:
+            res = self.submit_rebalance_order(trade, prices[trade.symbol], round_id)
+            if res.action == "ORDER_PLACED":
+                self.consolidate_stop(trade.symbol, trade.new_total_qty,
+                                      prices[trade.symbol], round_id)
+            else:
+                logger.info("rebalance %s %s -> %s", trade.side, trade.symbol,
+                            res.action)
+        logger.info("REBALANCE complete: %d trade(s), %d skipped",
+                    len(plan.trades), len(plan.skipped))
+        return "REBALANCED"
 
     def shutdown(self) -> None:
         # Cancel-on-shutdown (CLAUDE.md). Best-effort flatten of working orders:
