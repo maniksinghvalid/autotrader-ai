@@ -28,9 +28,14 @@ def test_each_job_fires_only_once_per_day():
 
 
 def test_single_job_fires_at_its_time():
-    from autotrader.scheduler import LifecycleScheduler, RISK_SWEEP
+    from autotrader.scheduler import (
+        LifecycleScheduler, RISK_SWEEP, REBALANCE, RISK_CHECK_MID, RISK_CHECK_LATE,
+    )
     s = LifecycleScheduler()
-    s.poll(_dt(10, 0))            # fire the two morning jobs
+    s.poll(_dt(10, 0))            # fire the two morning jobs (PRE_OPEN_SYNC, ENTRY_OPEN)
+    s.poll(_dt(13, 0))            # fire REBALANCE (12:30 past due)
+    s.poll(_dt(14, 0))            # fire RISK_CHECK_MID (13:30 past due)
+    s.poll(_dt(15, 0))            # fire RISK_CHECK_LATE (15:00 exactly)
     assert s.poll(_dt(15, 31)) == [RISK_SWEEP]
 
 
