@@ -68,6 +68,12 @@ def load_risk_config() -> RiskConfig:
     overlays = frozenset(
         o.strip().upper() for o in raw_overlays.split(",") if o.strip()
     )
+    option_dte_min = int(_f("RISK_OPTION_DTE_MIN", 30))
+    option_dte_max = int(_f("RISK_OPTION_DTE_MAX", 45))
+    if option_dte_min > option_dte_max:
+        raise ValueError(
+            f"RISK_OPTION_DTE_MIN ({option_dte_min}) must not exceed "
+            f"RISK_OPTION_DTE_MAX ({option_dte_max})")
     daily_loss_limit = _f("RISK_DAILY_LOSS_LIMIT", 500)
     daily_loss_halt = _f("RISK_DAILY_LOSS_HALT", 1000)
     if daily_loss_halt <= daily_loss_limit:
@@ -96,8 +102,8 @@ def load_risk_config() -> RiskConfig:
         max_option_contracts=int(_f("RISK_MAX_OPTION_CONTRACTS", 0)),
         max_option_premium_per_trade=_f("RISK_MAX_OPTION_PREMIUM_PER_TRADE", 0.0),
         option_target_delta=_f("RISK_OPTION_TARGET_DELTA", 0.30),
-        option_dte_min=int(_f("RISK_OPTION_DTE_MIN", 30)),
-        option_dte_max=int(_f("RISK_OPTION_DTE_MAX", 45)),
+        option_dte_min=option_dte_min,
+        option_dte_max=option_dte_max,
         option_dte_to_close=int(_f("RISK_OPTION_DTE_TO_CLOSE", 7)),
         option_profit_target_pct=_f("RISK_OPTION_PROFIT_TARGET_PCT", 0.5),
     )
