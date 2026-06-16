@@ -26,6 +26,7 @@ limits in `config/`).
 | D5 | Target delivery | Optional `portfolio_targets[]` block on the **existing** `RoutineSignalPayload` — no new ingress, no webhook security change |
 | D6 | Untargeted holdings | A position absent from the target snapshot is **left untouched** (managed by its strategy/trailing stop), never force-sold to zero |
 | D7 | Stop consolidation | **In scope** — re-size the trailing stop on every rebalance qty change |
+| D8 | Exits during a loss breach | `risk_core` gains a **reduce-only exception**: a position-reducing SELL bypasses the risk-increasing caps (daily-loss/notional/exposure) so the hard-tier flatten and strategy stop-loss exits can liquidate during a breach. Env/stale/allow-list/long-only still apply. |
 
 ## 3. Architecture
 
@@ -143,6 +144,16 @@ and 15:00:
   + `db.record_halt(reason)` + set the session **halt** flag. Logged `RISK_HALT`.
 - `RISK_DAILY_LOSS_HALT > RISK_DAILY_LOSS_LIMIT` is validated at config load;
   a misordered pair is a startup error.
+
+**Reduce-only exit exception (D8):** the hard-tier flatten places SELLs through
+the audited path, but `risk_core` currently rejects *all* orders once
+`day_pnl <= -daily_loss_limit`. So `risk_core.evaluate` gains a minimal-diff
+exception: a SELL that strictly reduces a long position (`0 <= resulting < held`)
+skips the three risk-increasing caps (daily-loss, order notional, gross
+exposure); env / stale / allow-list / long-only checks still apply. This keeps
+the single audited path intact (exits are still evaluated, just never blocked for
+a risk-increasing reason) and also fixes strategy stop-loss exits during a
+breach. All existing `risk_core` tests remain green (no check reordering).
 
 **Soft-tier scope note:** v1 closes the gate only (entries are MARKET orders that
 fill immediately in sim and rest only briefly live); it does **not** selectively
