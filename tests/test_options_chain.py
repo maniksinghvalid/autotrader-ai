@@ -105,3 +105,48 @@ def test_overlay_literal_matches_enum():
     for arg in typing.get_args(field.annotation):
         literal_args.update(typing.get_args(arg))
     assert literal_args == {m.value for m in OverlayType}
+
+
+from autotrader.options.chain import OptionQuote, select_contract, to_contract
+
+
+def _chain(asof):
+    from datetime import timedelta
+    return [
+        OptionQuote(code="C1", underlying="US.AAPL", expiry=asof + timedelta(days=10),
+                    strike=205, right="CALL", delta=0.30, premium=2.0),   # too near (DTE 10)
+        OptionQuote(code="C2", underlying="US.AAPL", expiry=asof + timedelta(days=35),
+                    strike=210, right="CALL", delta=0.28, premium=1.5),   # in window, closest delta
+        OptionQuote(code="C3", underlying="US.AAPL", expiry=asof + timedelta(days=35),
+                    strike=220, right="CALL", delta=0.12, premium=0.6),   # in window, far delta
+        OptionQuote(code="P1", underlying="US.AAPL", expiry=asof + timedelta(days=35),
+                    strike=190, right="PUT", delta=-0.29, premium=1.4),
+    ]
+
+
+def test_select_picks_closest_delta_in_window():
+    asof = date(2026, 6, 16)
+    q = select_contract(_chain(asof), right="CALL", target_delta=0.30,
+                        dte_min=30, dte_max=45, asof=asof)
+    assert q.code == "C2"
+
+
+def test_select_uses_abs_delta_for_puts():
+    asof = date(2026, 6, 16)
+    q = select_contract(_chain(asof), right="PUT", target_delta=0.30,
+                        dte_min=30, dte_max=45, asof=asof)
+    assert q.code == "P1"
+
+
+def test_select_none_when_window_empty():
+    asof = date(2026, 6, 16)
+    assert select_contract(_chain(asof), right="CALL", target_delta=0.30,
+                           dte_min=60, dte_max=90, asof=asof) is None
+
+
+def test_to_contract_maps_fields():
+    asof = date(2026, 6, 16)
+    q = select_contract(_chain(asof), right="CALL", target_delta=0.30,
+                        dte_min=30, dte_max=45, asof=asof)
+    c = to_contract(q)
+    assert c.code == "C2" and c.right == "CALL" and c.multiplier == 100
