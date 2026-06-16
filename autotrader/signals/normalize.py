@@ -12,10 +12,14 @@ confidence_scale is a signal-shaping parameter (NOT a risk limit), so it is a
 function argument with a default — not a RiskConfig field."""
 from __future__ import annotations
 
-from typing import List
+import logging
+import math
+from typing import List, Optional
 
 from autotrader.domain import Signal
 from autotrader.signals.schema import RoutineSignalPayload, SignalChange
+
+logger = logging.getLogger("autotrader.signals.normalize")
 
 _DIRECTION = {"UP": "BUY", "DOWN": "SELL"}
 
@@ -31,16 +35,29 @@ def _confidence(points_delta: int, scale: float) -> float:
     return max(0.0, min(1.0, abs(points_delta) / scale))
 
 
-def normalize_change(change: SignalChange, confidence_scale: float = 10.0) -> Signal:
+def normalize_change(change: SignalChange, confidence_scale: float = 10.0,
+                     stop_price: Optional[float] = None) -> Signal:
     return Signal(
         symbol=_normalize_symbol(change.ticker),
         direction=_DIRECTION[change.direction],
         confidence=_confidence(change.points_delta, confidence_scale),
         rationale=f"{change.driver or 'external'}: "
                   f"{'/'.join(change.transition) or change.direction}",
+        stop_price=stop_price,
     )
 
 
 def normalize_payload(payload: RoutineSignalPayload,
                       confidence_scale: float = 10.0) -> List[Signal]:
-    return [normalize_change(c, confidence_scale) for c in payload.signal_changes]
+    # Re-key hard_stops by the same normalized symbol the change resolves to, so a
+    # bare 'aapl' stop matches a qualified 'US.AAPL' change. A bad (non-finite/<=0)
+    # stop is dropped to None rather than rejecting the whole batch.
+    stops = {}
+    for raw_key, value in payload.hard_stops.items():
+        if isinstance(value, (int, float)) and math.isfinite(value) and value > 0:
+            stops[_normalize_symbol(raw_key)] = float(value)
+        else:
+            logger.warning("dropping invalid hard_stop for %s: %r", raw_key, value)
+    return [normalize_change(c, confidence_scale,
+                             stops.get(_normalize_symbol(c.ticker)))
+            for c in payload.signal_changes]

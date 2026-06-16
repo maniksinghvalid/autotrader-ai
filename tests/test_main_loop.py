@@ -216,3 +216,81 @@ def test_no_trailing_stop_when_disabled(tmp_path):
     eng = _engine(b, tmp_path=tmp_path)   # _cfg() default trailing_stop_pct=0.0
     assert eng.tick().action == "ORDER_PLACED"
     assert b.get_open_orders() == []      # no resting stop when disabled
+
+
+def _ext_engine(broker, cfg, tmp_path, qty=1):
+    """Engine for external-signal sizing tests (no strategy auto-signal needed)."""
+    strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=999.0,
+                                             stop_loss_pct=0.05, take_profit_pct=0.10,
+                                             confidence=0.7))
+    return TradeEngine(broker=broker, strategy=strat, cfg=cfg, order_qty=qty,
+                       audit_path=str(tmp_path / "audit.jsonl"))
+
+
+def test_buy_uses_risk_sizing_when_enabled(tmp_path):
+    """With sizing on and a signal-carried stop, BUY qty is risk-derived, not order_qty."""
+    from autotrader.domain import Signal
+    # equity ~= total_assets = cash 100k; risk 1% = $1000; price 100, stop 98 -> dist 2;
+    # base 500; confidence 1.0 -> 500 shares (order_qty is only 1).
+    b = SimBroker(quotes={"US.AAPL": 100.0}, cash=100000.0)
+    cfg = _cfg(risk_per_trade_pct=0.01, max_position_qty=10000, max_order_notional=1e9,
+               max_gross_exposure=1e9)
+    eng = _ext_engine(b, cfg, tmp_path, qty=1)
+    res = eng.submit_external_signal(
+        Signal(symbol="US.AAPL", direction="BUY", confidence=1.0, rationale="ext",
+               stop_price=98.0))
+    assert res.action == "ORDER_PLACED"
+    assert b.get_account().position_qty("US.AAPL") == 500
+
+
+def test_buy_falls_back_to_fixed_when_no_stop_and_no_trailing(tmp_path):
+    from autotrader.domain import Signal
+    b = SimBroker(quotes={"US.AAPL": 100.0}, cash=100000.0)
+    cfg = _cfg(risk_per_trade_pct=0.01, trailing_stop_pct=0.0)  # sizing on, but no stop source
+    eng = _ext_engine(b, cfg, tmp_path, qty=4)
+    res = eng.submit_external_signal(
+        Signal(symbol="US.AAPL", direction="BUY", confidence=1.0, rationale="ext"))
+    assert res.action == "ORDER_PLACED"
+    assert b.get_account().position_qty("US.AAPL") == 4   # fixed ORDER_QTY fallback
+
+
+def test_buy_sized_zero_places_nothing(tmp_path):
+    from autotrader.domain import Signal
+    b = SimBroker(quotes={"US.AAPL": 100.0}, cash=100.0)   # tiny equity
+    cfg = _cfg(risk_per_trade_pct=0.0001, trailing_stop_pct=5.0)  # base floors to 0
+    eng = _ext_engine(b, cfg, tmp_path, qty=1)
+    res = eng.submit_external_signal(
+        Signal(symbol="US.AAPL", direction="BUY", confidence=1.0, rationale="ext"))
+    assert res.action == "SIZED_ZERO"
+    assert b.get_account().position_qty("US.AAPL") == 0
+
+
+def test_sell_still_full_liquidation_with_sizing_enabled(tmp_path):
+    """Sizing is BUY-only; a SELL exit still liquidates the whole position."""
+    from autotrader.domain import OrderRequest, Signal
+    b = SimBroker(quotes={"US.AAPL": 94.0}, cash=100000.0)
+    b.place_order(OrderRequest(symbol="US.AAPL", side="BUY", qty=10,
+                               order_type="LIMIT", limit_price=120.0,
+                               client_order_id="setup-cid"))
+    cfg = _cfg(risk_per_trade_pct=0.01, trailing_stop_pct=5.0)
+    eng = _ext_engine(b, cfg, tmp_path, qty=1)
+    res = eng.submit_external_signal(
+        Signal(symbol="US.AAPL", direction="SELL", confidence=1.0, rationale="exit"))
+    assert res.action == "ORDER_PLACED"
+    sell_fills = [f for f in b.reconcile_fills(None) if f.side == "SELL"]
+    assert len(sell_fills) == 1 and sell_fills[0].qty == 10   # full position, not sized
+
+
+def test_sized_qty_clamped_to_pass_risk_core(tmp_path):
+    """A risk-base above the position cap is clamped DOWN so risk_core still approves."""
+    from autotrader.domain import Signal
+    b = SimBroker(quotes={"US.AAPL": 100.0}, cash=100000.0)
+    # base would be 500, but max_position_qty caps the order at 50.
+    cfg = _cfg(risk_per_trade_pct=0.01, max_position_qty=50, max_order_notional=1e9,
+               max_gross_exposure=1e9)
+    eng = _ext_engine(b, cfg, tmp_path, qty=1)
+    res = eng.submit_external_signal(
+        Signal(symbol="US.AAPL", direction="BUY", confidence=1.0, rationale="ext",
+               stop_price=98.0))
+    assert res.action == "ORDER_PLACED"
+    assert b.get_account().position_qty("US.AAPL") == 50

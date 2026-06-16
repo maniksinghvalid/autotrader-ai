@@ -19,6 +19,11 @@ class RiskConfig:
     max_gross_exposure: float
     allowed_symbols: FrozenSet[str]
     trailing_stop_pct: float = 0.0   # 0 disables broker-resting stops; e.g. 5.0 = 5%
+    # Risk-per-trade position sizing (additive). risk_per_trade_pct is a FRACTION of
+    # total_assets risked to the stop per BUY (0.01 = 1%); 0 disables -> fixed ORDER_QTY.
+    risk_per_trade_pct: float = 0.0
+    confidence_size_floor: float = 0.5   # size factor at confidence == min_confidence
+    confidence_size_ceil: float = 1.0    # size factor at confidence == 1.0
 
 
 def _f(name: str, default: float) -> float:
@@ -42,4 +47,7 @@ def load_risk_config() -> RiskConfig:
         max_gross_exposure=_f("RISK_MAX_GROSS_EXPOSURE", 50000),
         allowed_symbols=symbols,
         trailing_stop_pct=_f("RISK_TRAILING_STOP_PCT", 0.0),
+        risk_per_trade_pct=_f("RISK_PER_TRADE_PCT", 0.0),
+        confidence_size_floor=_f("RISK_CONFIDENCE_SIZE_FLOOR", 0.5),
+        confidence_size_ceil=_f("RISK_CONFIDENCE_SIZE_CEIL", 1.0),
     )

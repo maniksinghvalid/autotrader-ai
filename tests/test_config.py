@@ -35,3 +35,20 @@ def test_loader_reads_trailing_stop_pct(monkeypatch):
     assert load_risk_config().trailing_stop_pct == 0.0   # disabled by default
     monkeypatch.setenv("RISK_TRAILING_STOP_PCT", "5.0")
     assert load_risk_config().trailing_stop_pct == 5.0
+
+
+def test_loader_reads_sizing_knobs_with_safe_defaults(monkeypatch):
+    for k in ("RISK_PER_TRADE_PCT", "RISK_CONFIDENCE_SIZE_FLOOR",
+              "RISK_CONFIDENCE_SIZE_CEIL"):
+        monkeypatch.delenv(k, raising=False)
+    cfg = load_risk_config()
+    assert cfg.risk_per_trade_pct == 0.0      # sizing OFF by default -> fixed ORDER_QTY
+    assert cfg.confidence_size_floor == 0.5
+    assert cfg.confidence_size_ceil == 1.0
+    monkeypatch.setenv("RISK_PER_TRADE_PCT", "0.01")
+    monkeypatch.setenv("RISK_CONFIDENCE_SIZE_FLOOR", "0.4")
+    monkeypatch.setenv("RISK_CONFIDENCE_SIZE_CEIL", "1.2")
+    cfg2 = load_risk_config()
+    assert cfg2.risk_per_trade_pct == 0.01
+    assert cfg2.confidence_size_floor == 0.4
+    assert cfg2.confidence_size_ceil == 1.2

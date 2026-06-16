@@ -13,6 +13,17 @@ RISK_ALLOWED_SYMBOLS=US.AAPL,US.MSFT,US.NIO
 # Risk-limit CHANGES require explicit human review (CLAUDE.md).
 RISK_TRAILING_STOP_PCT=5.0
 
+# Risk-per-trade position sizing for BUY entries (additive; 0 disables -> fixed
+# ORDER_QTY). RISK_PER_TRADE_PCT is a FRACTION of total_assets risked to the stop:
+# 0.01 = risk 1% of equity. qty = floor(equity * RISK_PER_TRADE_PCT / stop_dist),
+# where stop_dist = entry - signal_hard_stop (else entry * RISK_TRAILING_STOP_PCT/100),
+# then scaled by confidence between FLOOR (at RISK_MIN_CONFIDENCE) and CEIL (at 1.0),
+# and clamped down to the notional/position/exposure caps above.
+# Risk-limit CHANGES require explicit human review (CLAUDE.md).
+RISK_PER_TRADE_PCT=0.0
+RISK_CONFIDENCE_SIZE_FLOOR=0.5
+RISK_CONFIDENCE_SIZE_CEIL=1.0
+
 # Path for the SQLite WAL projection. Default: ~/.autotrader.db
 # AUTOTRADER_DB_PATH=~/.autotrader.db
 

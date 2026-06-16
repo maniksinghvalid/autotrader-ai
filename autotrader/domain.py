@@ -3,6 +3,7 @@ must import with no OpenD and no moomoo-api present."""
 from __future__ import annotations
 
 import enum
+import math
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal, Mapping, Optional, Tuple
@@ -45,12 +46,16 @@ class Signal:
     direction: Side
     confidence: float
     rationale: str
+    stop_price: Optional[float] = None   # per-signal hard stop; None = none supplied
 
     def __post_init__(self):
         if self.direction not in ("BUY", "SELL"):
             raise ValueError(f"Signal.direction must be BUY/SELL, got {self.direction}")
         if not (0.0 <= self.confidence <= 1.0):
             raise ValueError(f"confidence must be in [0,1], got {self.confidence}")
+        if self.stop_price is not None and (not math.isfinite(self.stop_price)
+                                            or self.stop_price <= 0):
+            raise ValueError(f"stop_price must be a positive finite price, got {self.stop_price}")
 
 
 @dataclass(frozen=True)

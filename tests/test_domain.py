@@ -17,6 +17,23 @@ def test_signal_is_frozen_and_validates_confidence():
         Signal(symbol="US.AAPL", direction="HOLD", confidence=0.5, rationale="x")
 
 
+def test_signal_stop_price_optional_and_validated():
+    # Default: no stop carried.
+    assert Signal(symbol="US.AAPL", direction="BUY", confidence=0.8,
+                  rationale="x").stop_price is None
+    # A valid positive stop is accepted and carried.
+    s = Signal(symbol="US.AAPL", direction="BUY", confidence=0.8, rationale="x",
+               stop_price=95.0)
+    assert s.stop_price == 95.0
+    # Non-positive / non-finite stops are rejected.
+    with pytest.raises(ValueError):
+        Signal(symbol="US.AAPL", direction="BUY", confidence=0.8, rationale="x",
+               stop_price=0.0)
+    with pytest.raises(ValueError):
+        Signal(symbol="US.AAPL", direction="BUY", confidence=0.8, rationale="x",
+               stop_price=float("nan"))
+
+
 def test_order_request_requires_positive_qty_and_limit_price_rules():
     r = OrderRequest(symbol="US.AAPL", side="BUY", qty=10, order_type="MARKET",
                      limit_price=None, client_order_id="abc")

@@ -14,6 +14,7 @@ from autotrader.config import RiskConfig, load_risk_config
 from autotrader.domain import OrderRequest, OrderState, Signal
 from autotrader.risk_core import evaluate
 from autotrader.router import OrderRouter
+from autotrader.sizing import size_position
 from autotrader.strategies.threshold import ThresholdStrategy
 
 if TYPE_CHECKING:
@@ -92,9 +93,26 @@ class TradeEngine:
                 signal_id=signal_id,
             )
 
-        # SELL exits liquidate the full position; BUY uses the configured order_qty.
+        # SELL exits liquidate the full position. BUY entries are risk-sized off the
+        # stop distance (autotrader.sizing); with sizing disabled this returns the
+        # configured order_qty unchanged. The sizer only proposes/clamps-down — the
+        # risk core below remains the sole pass/reject gate.
         pos = next((p for p in snap.positions if p.symbol == signal.symbol), None)
-        eff_qty = pos.qty if (signal.direction == "SELL" and pos is not None) else self._qty
+        if signal.direction == "SELL" and pos is not None:
+            eff_qty = pos.qty
+        else:
+            sr = size_position(
+                equity=snap.total_assets, entry_price=price,
+                signal_stop=signal.stop_price, confidence=signal.confidence,
+                cfg=self._cfg, current_qty=(pos.qty if pos else 0),
+                gross_exposure=snap.gross_exposure(), fixed_qty=self._qty)
+            if sr.used_risk_sizing and sr.qty <= 0:
+                logger.info("signal %s sized to 0 (%s) — not placing", signal_id, sr.reason)
+                return TickResult("SIZED_ZERO", f"{signal.symbol}:{sr.reason}")
+            if sr.reason == "NO_STOP_DISTANCE_FALLBACK":
+                logger.warning("no stop distance for %s; falling back to fixed qty %d",
+                               signal.symbol, self._qty)
+            eff_qty = sr.qty
         cid = OrderRouter.make_client_order_id(signal.symbol, signal.direction, eff_qty, signal_id)
         req = OrderRequest(symbol=signal.symbol, side=signal.direction, qty=eff_qty,
                            order_type="MARKET", limit_price=None, client_order_id=cid)
