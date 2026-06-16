@@ -32,7 +32,7 @@ def _dt(h, m, day=12):
     return datetime(2026, 6, day, h, m, tzinfo=_NY)
 
 
-def _build(tmp_path, broker, *, healthy=True, gate_enabled=False, inbox=None):
+def _build(tmp_path, broker, *, healthy=True, gate_enabled=False, inbox=None, reporter=None):
     db = DB(str(tmp_path / "runner.db"))
     gate = EntryGate(enabled=gate_enabled)
     strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=100.0,
@@ -45,7 +45,7 @@ def _build(tmp_path, broker, *, healthy=True, gate_enabled=False, inbox=None):
     runner = SessionRunner(engine=eng, broker=broker, db=db, gate=gate,
                            scheduler=LifecycleScheduler(), watchdog=watch,
                            clock=FixedClock(_dt(8, 0)), sleep=lambda s: None,
-                           signal_inbox=inbox)
+                           signal_inbox=inbox, reporter=reporter)
     return runner, db, gate
 
 
@@ -151,4 +151,29 @@ def test_run_once_skips_inbox_when_unhealthy(tmp_path):
     assert runner.run_once(_dt(10, 0)) == "HALTED_UNHEALTHY"
     assert b.get_account().position_qty("US.AAPL") == 0   # no external order placed
     assert (inbox_dir / "sig1.json").exists()             # file NOT consumed while halted
+    db.close()
+
+
+class _FakeReporter:
+    def __init__(self):
+        self.calls = []
+
+    def send_eod_report(self, now):
+        self.calls.append(now)
+
+
+def test_eod_report_job_invokes_reporter(tmp_path):
+    b = SimBroker(quotes={"US.AAPL": 101.0}, cash=100000.0)
+    rep = _FakeReporter()
+    runner, db, gate = _build(tmp_path, b, reporter=rep)
+    runner.run_once(_dt(16, 31))            # first poll catches up through EOD_REPORT
+    assert len(rep.calls) == 1
+    assert rep.calls[0] == _dt(16, 31)
+    db.close()
+
+
+def test_eod_report_without_reporter_is_noop(tmp_path):
+    b = SimBroker(quotes={"US.AAPL": 101.0}, cash=100000.0)
+    runner, db, gate = _build(tmp_path, b)   # reporter defaults to None
+    runner.run_once(_dt(16, 31))            # must not raise
     db.close()

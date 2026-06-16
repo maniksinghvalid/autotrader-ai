@@ -19,7 +19,7 @@ from autotrader.clock import Clock
 from autotrader.lifecycle import EntryGate, ground_truth_sync
 from autotrader.scheduler import (
     LifecycleScheduler, PRE_OPEN_SYNC, ENTRY_OPEN, RISK_SWEEP, EOD_FLATTEN,
-    REBALANCE, RISK_CHECK_MID, RISK_CHECK_LATE,
+    REBALANCE, RISK_CHECK_MID, RISK_CHECK_LATE, EOD_REPORT,
 )
 
 logger = logging.getLogger("autotrader.runner")
@@ -29,7 +29,7 @@ class SessionRunner:
     def __init__(self, engine, broker, db, gate: EntryGate,
                  scheduler: LifecycleScheduler, watchdog, clock: Clock,
                  sleep: Callable[[float], None], loop_interval: float = 5.0,
-                 signal_inbox=None):
+                 signal_inbox=None, reporter=None):
         self._engine = engine
         self._broker = broker
         self._db = db
@@ -40,6 +40,7 @@ class SessionRunner:
         self._sleep = sleep
         self._loop_interval = loop_interval
         self._inbox = signal_inbox
+        self._reporter = reporter
 
     def _record_perf(self) -> None:
         snap = self._broker.get_account()
@@ -69,6 +70,10 @@ class SessionRunner:
                 self._broker.cancel_all()
                 self._record_perf()
             logger.info("EOD_FLATTEN: entries closed, all orders cancelled, performance committed")
+        elif job == EOD_REPORT:
+            if self._reporter is not None:
+                self._reporter.send_eod_report(now)
+                logger.info("EOD_REPORT: session summary sent to Slack")
 
     def run_once(self, now) -> str:
         """Execute one loop iteration. Returns the engine tick action, or
