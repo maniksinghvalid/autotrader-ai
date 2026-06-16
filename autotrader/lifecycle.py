@@ -27,7 +27,7 @@ class SyncResult:
 
 def ground_truth_sync(broker: Broker, db: DB, since: Optional[str] = None) -> SyncResult:
     snap = broker.get_account()
-    db.upsert_positions(list(snap.positions))
+    db.replace_positions(list(snap.positions))
     fills = broker.reconcile_fills(since)
     new = db.record_fills(fills)
     reconcile_open_orders(broker, db)

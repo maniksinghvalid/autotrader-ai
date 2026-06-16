@@ -46,6 +46,27 @@ def test_upsert_positions_stores_and_overwrites(tmp_path):
     db.close()
 
 
+def test_replace_positions_reconciles_to_snapshot(tmp_path):
+    from autotrader.domain import Position
+    db = _db(tmp_path)
+    db.replace_positions([Position("US.AAPL", 10, 150.0), Position("US.MSFT", 5, 400.0)])
+    # MSFT is fully closed -> absent from the new snapshot; AAPL updated.
+    db.replace_positions([Position("US.AAPL", 12, 151.0)])
+    rows = db._conn.execute("SELECT symbol, qty FROM positions ORDER BY symbol").fetchall()
+    assert rows == [("US.AAPL", 12)], "symbols absent from the snapshot must be removed"
+    db.close()
+
+
+def test_replace_positions_empty_snapshot_clears_table(tmp_path):
+    from autotrader.domain import Position
+    db = _db(tmp_path)
+    db.replace_positions([Position("US.AAPL", 10, 150.0)])
+    db.replace_positions([])  # broker now flat
+    count = db._conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0]
+    assert count == 0, "an empty snapshot clears the positions table"
+    db.close()
+
+
 def test_record_performance_upserts_by_date(tmp_path):
     db = _db(tmp_path)
     db.record_performance(day_pnl=100.0, total_assets=10500.0, cash=500.0, gross_exposure=10000.0)

@@ -158,6 +158,32 @@ class DB:
                 )
             self._conn.commit()
 
+    def replace_positions(self, positions: List) -> None:
+        """Reconcile the positions table to mirror the broker snapshot: upsert
+        every position present, then delete any symbol no longer in the snapshot.
+        The broker omits fully-flat positions rather than reporting qty=0, so a
+        closed-out symbol must be removed here or it lingers forever (read-through
+        cache posture: broker is the source of truth). An empty snapshot clears
+        the table."""
+        ts = _now()
+        keep = [p.symbol for p in positions]
+        with self._lock:
+            for p in positions:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO positions (symbol,qty,avg_price,updated_at) "
+                    "VALUES (?,?,?,?)",
+                    (p.symbol, p.qty, p.avg_price, ts),
+                )
+            if keep:
+                placeholders = ",".join("?" for _ in keep)
+                self._conn.execute(
+                    f"DELETE FROM positions WHERE symbol NOT IN ({placeholders})",
+                    keep,
+                )
+            else:
+                self._conn.execute("DELETE FROM positions")
+            self._conn.commit()
+
     def record_performance(self, day_pnl: float, total_assets: float,
                            cash: float, gross_exposure: float) -> None:
         with self._lock:
