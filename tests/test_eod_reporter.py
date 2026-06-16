@@ -100,3 +100,55 @@ def test_render_quiet_day_heartbeat(tmp_path):
     assert "no trades today" in payload["text"].lower()
     assert "100,000" in payload["text"]       # P&L header still present
     db.close()
+
+
+class _Capture:
+    """Fake http_post: records calls, fails the first `fail_times`, else returns status."""
+    def __init__(self, status=200, fail_times=0):
+        self.calls = []
+        self._status = status
+        self._fail_times = fail_times
+
+    def __call__(self, url, payload):
+        self.calls.append((url, payload))
+        if len(self.calls) <= self._fail_times:
+            raise OSError("boom")
+        return self._status
+
+
+def test_send_posts_once_on_success(tmp_path):
+    db = DB(str(tmp_path / "r.db"))
+    _seed(db)
+    cap = _Capture(status=200)
+    _reporter(db, cap).send_eod_report(_now())
+    assert len(cap.calls) == 1
+    assert cap.calls[0][0] == "https://hooks.slack.test/x"
+    assert "blocks" in cap.calls[0][1]
+    db.close()
+
+
+def test_send_retries_then_succeeds(tmp_path):
+    db = DB(str(tmp_path / "r.db"))
+    _seed(db)
+    cap = _Capture(status=200, fail_times=1)
+    _reporter(db, cap).send_eod_report(_now())
+    assert len(cap.calls) == 2          # one failure, one success
+    db.close()
+
+
+def test_send_failure_exhausts_retries_without_raising(tmp_path):
+    db = DB(str(tmp_path / "r.db"))
+    _seed(db)
+    cap = _Capture(fail_times=99)
+    _reporter(db, cap).send_eod_report(_now())   # must NOT raise
+    assert len(cap.calls) == 3          # retries=3
+    db.close()
+
+
+def test_send_non_2xx_status_is_retried(tmp_path):
+    db = DB(str(tmp_path / "r.db"))
+    _seed(db)
+    cap = _Capture(status=500)
+    _reporter(db, cap).send_eod_report(_now())   # must NOT raise
+    assert len(cap.calls) == 3
+    db.close()

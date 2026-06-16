@@ -156,3 +156,28 @@ class EODReporter:
         blocks.append({"type": "section", "text": {"type": "mrkdwn",
                        "text": f"*Open positions ({len(d.positions)})*\n{pos}"}})
         return blocks
+
+    def send_eod_report(self, now: datetime) -> None:
+        """Build and post the EOD summary. Never raises into the runner."""
+        try:
+            payload = self._render(self._gather(now))
+        except Exception as e:
+            logger.error("EOD report build failed: %s", e)
+            return
+        self._post_with_retry(payload)
+
+    def _post_with_retry(self, payload: dict) -> None:
+        last = None
+        for attempt in range(1, self._retries + 1):
+            try:
+                status = self._post(self._url, payload)
+                if 200 <= status < 300:
+                    logger.info("EOD report posted to Slack (status %s)", status)
+                    return
+                last = f"HTTP {status}"
+            except Exception as e:  # network/URL errors — retry, then give up
+                last = str(e)
+            if attempt < self._retries:
+                self._sleep(min(2 ** (attempt - 1), 5))
+        logger.error("EOD report POST failed after %d attempt(s): %s",
+                     self._retries, last)
