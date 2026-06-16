@@ -37,3 +37,16 @@ RISK_CONFIDENCE_SIZE_CEIL=1.0
 # Webhook ingress secrets (Phase 2c-W) live in config/secure.config (GITIGNORED)
 # — see config/secure.config.example. The webhook process also needs the same
 # AUTOTRADER_SIGNAL_INBOX value as the trader (it enqueues into that directory).
+
+# --- Portfolio rebalancing (Phase: rebalancing). Disabled by default. -----------
+# Midday REBALANCE job (12:30) trims/tops-up positions toward signal-score target
+# weights; RISK_CHECK jobs (13:30, 15:00) run a tiered loss preservation gate.
+# Risk-limit CHANGES require explicit human review (CLAUDE.md).
+RISK_REBALANCE_ENABLED=false
+RISK_REBALANCE_BAND_PCT=5.0           # ±percentage-points of weight before acting
+RISK_REBALANCE_MIN_NOTIONAL=200       # skip rebalance trades smaller than this
+RISK_REBALANCE_CASH_BUFFER_PCT=10.0   # reserve as cash; weights apply to the rest
+RISK_TARGET_STALENESS_HOURS=24        # skip rebalance if the target snapshot is older
+# Hard daily-loss flatten+halt. MUST exceed the soft RISK_DAILY_LOSS_LIMIT (which
+# only closes the entry gate). Breach when day_pnl <= -value.
+RISK_DAILY_LOSS_HALT=1000

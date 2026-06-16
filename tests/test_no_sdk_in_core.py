@@ -20,6 +20,7 @@ def test_core_imports_do_not_load_moomoo_sdk():
         "          'autotrader.rate_limiter', 'autotrader.db',\n"
         "          'autotrader.clock', 'autotrader.scheduler', 'autotrader.lifecycle',\n"
         "          'autotrader.watchdog', 'autotrader.runner',\n"
+        "          'autotrader.rebalance', 'autotrader.risk_check',\n"
         "          'autotrader.signals.schema', 'autotrader.signals.normalize',\n"
         "          'autotrader.signals.inbox', 'autotrader.signals.routine_adapter',\n"
         "          'autotrader.moomoo_broker'):\n"
