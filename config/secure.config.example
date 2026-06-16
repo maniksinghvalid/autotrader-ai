@@ -11,3 +11,9 @@ AUTOTRADER_WEBHOOK_SECRET=change-me-to-a-long-random-string
 AUTOTRADER_WEBHOOK_HOST=127.0.0.1
 AUTOTRADER_WEBHOOK_PORT=8799
 AUTOTRADER_WEBHOOK_MAX_BODY=65536
+
+# Slack incoming-webhook URL for the end-of-day session report (posts to
+# #portfolio_updates). Leave unset to disable EOD reporting entirely (the
+# runner behaves exactly as without it). Create one at:
+#   https://api.slack.com/messaging/webhooks
+AUTOTRADER_SLACK_WEBHOOK_URL=

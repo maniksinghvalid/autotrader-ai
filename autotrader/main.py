@@ -405,12 +405,20 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
         inbox = SignalInbox(os.path.expanduser(inbox_dir),
                             on_targets=db.upsert_target_weights)
         logger.info("external-signal inbox at %s", inbox_dir)
+    reporter = None
+    slack_url = os.getenv("AUTOTRADER_SLACK_WEBHOOK_URL")
+    if slack_url:
+        from autotrader.reporting.eod_reporter import EODReporter
+        reporter = EODReporter(db=db, webhook_url=slack_url,
+                               trading_env=cfg.trading_env)
+        logger.info("EOD Slack reporter enabled")
     runner = SessionRunner(
         engine=engine, broker=broker, db=db, gate=gate,
         scheduler=LifecycleScheduler(), watchdog=watchdog, clock=Clock(),
         sleep=time.sleep,
         loop_interval=float(os.getenv("AUTOTRADER_LOOP_INTERVAL", "5")),
         signal_inbox=inbox,
+        reporter=reporter,
     )
 
     stopped = {"flag": False}
