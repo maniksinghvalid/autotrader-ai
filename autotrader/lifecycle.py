@@ -36,17 +36,28 @@ def ground_truth_sync(broker: Broker, db: DB, since: Optional[str] = None) -> Sy
 
 
 class EntryGate:
-    """Whether new BUY entries are currently permitted. Defaults closed."""
+    """Whether new BUY entries are currently permitted (defaults closed), plus a
+    one-way session HALT. Once halted, entries can never re-open this session and
+    the runner/engine stop trading."""
 
     def __init__(self, enabled: bool = False):
         self._enabled = enabled
+        self._halted = False
 
     @property
     def entries_enabled(self) -> bool:
-        return self._enabled
+        return self._enabled and not self._halted
+
+    @property
+    def halted(self) -> bool:
+        return self._halted
 
     def open(self) -> None:
         self._enabled = True
 
     def close(self) -> None:
+        self._enabled = False
+
+    def halt(self) -> None:
+        self._halted = True
         self._enabled = False
