@@ -150,3 +150,46 @@ def test_to_contract_maps_fields():
                         dte_min=30, dte_max=45, asof=asof)
     c = to_contract(q)
     assert c.code == "C2" and c.right == "CALL" and c.multiplier == 100
+
+
+def test_select_tiebreak_prefers_nearest_expiry_then_strike():
+    from datetime import timedelta
+    asof = date(2026, 6, 16)
+    # All four have identical |delta| distance from target (0.30): delta 0.25.
+    # They differ only by expiry and strike, so the tie-break must decide.
+    quotes = [
+        OptionQuote(code="FAR_LOW", underlying="US.AAPL", expiry=asof + timedelta(days=40),
+                    strike=210, right="CALL", delta=0.25, premium=1.0),
+        OptionQuote(code="NEAR_HIGH", underlying="US.AAPL", expiry=asof + timedelta(days=35),
+                    strike=220, right="CALL", delta=0.25, premium=1.0),
+        OptionQuote(code="NEAR_LOW", underlying="US.AAPL", expiry=asof + timedelta(days=35),
+                    strike=205, right="CALL", delta=0.25, premium=1.0),
+        OptionQuote(code="FAR_HIGH", underlying="US.AAPL", expiry=asof + timedelta(days=40),
+                    strike=200, right="CALL", delta=0.25, premium=1.0),
+    ]
+    # Nearest expiry (35d) wins over far (40d); among nearest, lowest strike (205).
+    winner = select_contract(quotes, right="CALL", target_delta=0.30,
+                             dte_min=30, dte_max=45, asof=asof)
+    assert winner.code == "NEAR_LOW"
+    # Order-independent: reversed input yields the same winner.
+    winner_rev = select_contract(list(reversed(quotes)), right="CALL",
+                                 target_delta=0.30, dte_min=30, dte_max=45, asof=asof)
+    assert winner_rev.code == "NEAR_LOW"
+
+
+def test_select_excludes_negative_premium():
+    from datetime import timedelta
+    asof = date(2026, 6, 16)
+    quotes = [
+        OptionQuote(code="NEG", underlying="US.AAPL", expiry=asof + timedelta(days=35),
+                    strike=210, right="CALL", delta=0.30, premium=-1.0),
+    ]
+    # Only candidate has negative premium -> excluded -> None.
+    assert select_contract(quotes, right="CALL", target_delta=0.30,
+                           dte_min=30, dte_max=45, asof=asof) is None
+
+
+def test_optionquote_rejects_bad_right():
+    with pytest.raises(ValueError):
+        OptionQuote(code="X", underlying="US.AAPL", expiry=date(2026, 7, 17),
+                    strike=200, right="STRADDLE", delta=0.30, premium=1.0)

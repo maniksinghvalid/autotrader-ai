@@ -21,12 +21,18 @@ class OptionQuote:
     delta: float
     premium: float   # mid premium per share (x multiplier = contract cost)
 
+    def __post_init__(self):
+        if self.right not in ("CALL", "PUT"):
+            raise ValueError(f"OptionQuote.right must be CALL/PUT, got {self.right!r}")
+
 
 def select_contract(quotes: List[OptionQuote], right: OptionRight,
                     target_delta: float, dte_min: int, dte_max: int,
                     asof: date) -> Optional[OptionQuote]:
     """Closest-to-target-|delta| contract of `right` whose DTE is in
-    [dte_min, dte_max] and premium > 0. None if nothing qualifies."""
+    [dte_min, dte_max] and premium > 0. None if nothing qualifies.
+    Ties broken by nearest expiry, then lowest strike (deterministic
+    regardless of input order)."""
     target = abs(target_delta)
     candidates = [
         q for q in quotes
@@ -35,7 +41,8 @@ def select_contract(quotes: List[OptionQuote], right: OptionRight,
     ]
     if not candidates:
         return None
-    return min(candidates, key=lambda q: abs(abs(q.delta) - target))
+    return min(candidates, key=lambda q: (abs(abs(q.delta) - target),
+                                          (q.expiry - asof).days, q.strike))
 
 
 def to_contract(q: OptionQuote) -> OptionContract:
