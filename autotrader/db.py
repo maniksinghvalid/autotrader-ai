@@ -82,6 +82,14 @@ CREATE TABLE IF NOT EXISTS halts (
     reason       TEXT NOT NULL,
     resolved_at  TEXT
 );
+
+CREATE TABLE IF NOT EXISTS target_weights (
+    as_of_date  TEXT NOT NULL,
+    symbol      TEXT NOT NULL,
+    score       REAL NOT NULL,
+    ingested_at TEXT NOT NULL,
+    PRIMARY KEY (as_of_date, symbol)
+);
 """
 
 
@@ -174,6 +182,57 @@ class DB:
             self._conn.execute(
                 "UPDATE halts SET resolved_at=? WHERE id=?", (_now(), halt_id)
             )
+            self._conn.commit()
+
+    def upsert_target_weights(self, as_of_date: str,
+                              rows: List[tuple]) -> None:
+        """Replace the target-weight snapshot for as_of_date. rows = [(symbol, score)].
+        ingested_at is stamped now (UTC) and drives the rebalance staleness guard."""
+        ts = _now()
+        with self._lock:
+            self._conn.execute("DELETE FROM target_weights WHERE as_of_date=?",
+                               (as_of_date,))
+            for symbol, score in rows:
+                self._conn.execute(
+                    "INSERT INTO target_weights (as_of_date,symbol,score,ingested_at) "
+                    "VALUES (?,?,?,?)",
+                    (as_of_date, symbol.upper(), float(score), ts),
+                )
+            self._conn.commit()
+
+    def latest_target_weights(self):
+        """Return (as_of_date, ingested_at, {symbol: score}) for the newest
+        snapshot, or None if none stored."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT as_of_date FROM target_weights "
+                "ORDER BY as_of_date DESC LIMIT 1").fetchone()
+            if row is None:
+                return None
+            as_of = row[0]
+            rows = self._conn.execute(
+                "SELECT symbol, score, ingested_at FROM target_weights "
+                "WHERE as_of_date=?", (as_of,)).fetchall()
+        scores = {r[0]: r[1] for r in rows}
+        ingested_at = rows[0][2]
+        return as_of, ingested_at, scores
+
+    def get_open_trailing_stop(self, symbol: str):
+        """broker_order_id of the most recent working TRAILING_STOP SELL for
+        symbol, or None. Working = SUBMITTED/PARTIAL with a broker id."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT broker_order_id FROM trades "
+                "WHERE symbol=? AND order_type='TRAILING_STOP' AND side='SELL' "
+                "AND state IN ('SUBMITTED','PARTIAL') AND broker_order_id IS NOT NULL "
+                "ORDER BY id DESC LIMIT 1", (symbol,)).fetchone()
+        return row[0] if row else None
+
+    def mark_order_cancelled(self, broker_order_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE trades SET state='CANCELLED' WHERE broker_order_id=?",
+                (broker_order_id,))
             self._conn.commit()
 
     def close(self) -> None:
