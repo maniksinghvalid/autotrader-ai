@@ -35,6 +35,17 @@ class RiskConfig:
     # Hard daily-loss flatten+halt threshold (must exceed the soft daily_loss_limit,
     # which gates new entries). Both are positive; breach when day_pnl <= -value.
     daily_loss_halt: float = 1000.0
+    # --- Options overlays (additive; DEFAULT-OFF). allowed_overlays empty AND
+    # max_option_contracts=0 both block option orders. Strike/expiry are chosen by
+    # delta+DTE targets. All values are HUMAN-REVIEW risk limits. ---
+    allowed_overlays: FrozenSet[str] = frozenset()
+    max_option_contracts: int = 0
+    max_option_premium_per_trade: float = 0.0
+    option_target_delta: float = 0.30
+    option_dte_min: int = 30
+    option_dte_max: int = 45
+    option_dte_to_close: int = 7        # exit declaration (enforced O4)
+    option_profit_target_pct: float = 0.5
 
 
 def _f(name: str, default: float) -> float:
@@ -53,6 +64,10 @@ def load_risk_config() -> RiskConfig:
     env = os.getenv("RISK_TRADING_ENV", "PAPER").strip().upper()
     if env not in ("PAPER", "LIVE"):
         env = "PAPER"
+    raw_overlays = os.getenv("RISK_ALLOWED_OVERLAYS", "")
+    overlays = frozenset(
+        o.strip().upper() for o in raw_overlays.split(",") if o.strip()
+    )
     daily_loss_limit = _f("RISK_DAILY_LOSS_LIMIT", 500)
     daily_loss_halt = _f("RISK_DAILY_LOSS_HALT", 1000)
     if daily_loss_halt <= daily_loss_limit:
@@ -77,4 +92,12 @@ def load_risk_config() -> RiskConfig:
         rebalance_cash_buffer_pct=_f("RISK_REBALANCE_CASH_BUFFER_PCT", 10.0),
         target_staleness_hours=_f("RISK_TARGET_STALENESS_HOURS", 24.0),
         daily_loss_halt=daily_loss_halt,
+        allowed_overlays=overlays,
+        max_option_contracts=int(_f("RISK_MAX_OPTION_CONTRACTS", 0)),
+        max_option_premium_per_trade=_f("RISK_MAX_OPTION_PREMIUM_PER_TRADE", 0.0),
+        option_target_delta=_f("RISK_OPTION_TARGET_DELTA", 0.30),
+        option_dte_min=int(_f("RISK_OPTION_DTE_MIN", 30)),
+        option_dte_max=int(_f("RISK_OPTION_DTE_MAX", 45)),
+        option_dte_to_close=int(_f("RISK_OPTION_DTE_TO_CLOSE", 7)),
+        option_profit_target_pct=_f("RISK_OPTION_PROFIT_TARGET_PCT", 0.5),
     )
