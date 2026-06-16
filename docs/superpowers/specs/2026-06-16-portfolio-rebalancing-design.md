@@ -27,6 +27,7 @@ limits in `config/`).
 | D6 | Untargeted holdings | A position absent from the target snapshot is **left untouched** (managed by its strategy/trailing stop), never force-sold to zero |
 | D7 | Stop consolidation | **In scope** — re-size the trailing stop on every rebalance qty change |
 | D8 | Exits during a loss breach | `risk_core` gains a **reduce-only exception**: a position-reducing SELL bypasses the risk-increasing caps (daily-loss/notional/exposure) so the hard-tier flatten and strategy stop-loss exits can liquidate during a breach. Env/stale/allow-list/long-only still apply. |
+| D9 | Partial-coverage weighting | **Allow-list-diversified**: when only some allow-listed symbols score, the investable pool is scaled by `n_scored / n_allowed` — a single scored name gets at most `investable / N_allowed`, the rest stays in cash. Caps concentration (preservation-leaning); does NOT award unscored symbols' share to scored ones. |
 
 ## 3. Architecture
 
@@ -76,7 +77,10 @@ audited path (`risk_core.evaluate → OrderRouter.submit → db.record_trade`).
 
 - `targets`: `{symbol: score}` from the store. Scores renormalized to weight
   fractions of **investable** equity, where
-  `investable = total_assets × (1 − RISK_REBALANCE_CASH_BUFFER_PCT/100)`.
+  `investable = total_assets × (1 − RISK_REBALANCE_CASH_BUFFER_PCT/100)`,
+  then scaled by `n_scored / n_allowed` (decision D9 — allow-list-diversified:
+  a single scored name gets at most `investable / N_allowed`, the remainder
+  stays in cash; unscored symbols' share is not awarded to scored ones).
 - `prices`: current quote per symbol (market value uses live quote, not
   `avg_price`).
 - Per symbol in the target set:
