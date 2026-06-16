@@ -235,5 +235,16 @@ class DB:
                 (broker_order_id,))
             self._conn.commit()
 
+    def open_trailing_stop_ids(self) -> List[str]:
+        """broker_order_ids of ALL working TRAILING_STOP SELLs (state
+        SUBMITTED/PARTIAL). Used by reconcile to detect stops swept at the broker."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT broker_order_id FROM trades "
+                "WHERE order_type='TRAILING_STOP' AND side='SELL' "
+                "AND state IN ('SUBMITTED','PARTIAL') AND broker_order_id IS NOT NULL"
+            ).fetchall()
+        return [r[0] for r in rows]
+
     def close(self) -> None:
         self._conn.close()

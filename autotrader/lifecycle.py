@@ -30,9 +30,31 @@ def ground_truth_sync(broker: Broker, db: DB, since: Optional[str] = None) -> Sy
     db.upsert_positions(list(snap.positions))
     fills = broker.reconcile_fills(since)
     new = db.record_fills(fills)
+    reconcile_open_orders(broker, db)
     logger.info("ground_truth_sync: %d position(s), %d new fill(s)",
                 len(snap.positions), new)
     return SyncResult(positions=len(snap.positions), new_fills=new)
+
+
+def reconcile_open_orders(broker: Broker, db: DB) -> int:
+    """Bring the trades projection in line with broker truth for resting trailing
+    stops: any DB-tracked working stop that is no longer open at the broker (e.g.
+    swept by a cancel_all at EOD or on a hard-loss halt) is marked CANCELLED, so a
+    later get_open_trailing_stop never treats a dead stop as live. The broker is
+    the source of truth (read-through cache posture, db.py). Returns the count
+    swept. (A stop that triggered+filled is likewise marked CANCELLED here — the
+    fill itself is captured by reconcile_fills; the projection only tracks whether
+    the order is still working, which is what get_open_trailing_stop needs.)"""
+    open_ids = {a.broker_order_id for a in broker.get_open_orders()
+                if a.broker_order_id is not None}
+    swept = 0
+    for boid in db.open_trailing_stop_ids():
+        if boid not in open_ids:
+            db.mark_order_cancelled(boid)
+            swept += 1
+    if swept:
+        logger.info("reconcile_open_orders: %d stale trailing stop(s) swept", swept)
+    return swept
 
 
 class EntryGate:
