@@ -26,6 +26,11 @@ class Catalyst(BaseModel):
     value: float
 
 
+class TargetWeight(BaseModel):
+    symbol: str
+    score: float
+
+
 class RoutineSignalPayload(BaseModel):
     routine_id: str
     timestamp: datetime
@@ -34,3 +39,7 @@ class RoutineSignalPayload(BaseModel):
     # catalyst logic are later phases — YAGNI).
     hard_stops: Dict[str, float] = Field(default_factory=dict)
     catalysts: List[Catalyst] = Field(default_factory=list)
+    # Signal-score portfolio targets for the midday rebalancer (raw composite
+    # scores; renormalized to weights at rebalance time). Optional — a payload
+    # with only signal_changes is unchanged.
+    portfolio_targets: List[TargetWeight] = Field(default_factory=list)
