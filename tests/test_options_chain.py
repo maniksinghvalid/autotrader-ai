@@ -5,6 +5,8 @@ import pytest
 from autotrader.domain import (
     OptionContract, OrderRequest, OverlayType, Signal,
 )
+from autotrader.signals.schema import RoutineSignalPayload
+from autotrader.signals.normalize import normalize_payload
 
 
 def test_option_contract_valid():
@@ -73,10 +75,6 @@ def test_signal_overlay_default_none():
         is OverlayType.COVERED_CALL
 
 
-from autotrader.signals.schema import RoutineSignalPayload
-from autotrader.signals.normalize import normalize_payload
-
-
 def test_overlay_flows_schema_to_signal():
     raw = ('{"routine_id":"r1","timestamp":"2026-06-15T13:00:00Z",'
            '"signal_changes":[{"ticker":"CLOV","direction":"UP","points_delta":7,'
@@ -93,3 +91,17 @@ def test_no_overlay_is_equity():
            '"signal_changes":[{"ticker":"AAPL","direction":"UP","points_delta":7}]}')
     sigs = normalize_payload(RoutineSignalPayload.model_validate_json(raw))
     assert sigs[0].overlay is None
+
+
+def test_overlay_literal_matches_enum():
+    # The SignalChange.overlay Literal mirrors domain.OverlayType (schema stays
+    # SDK-free). This guards against the two drifting apart as overlays are added.
+    import typing
+    from autotrader.signals.schema import SignalChange
+    from autotrader.domain import OverlayType
+    field = SignalChange.model_fields["overlay"]
+    # annotation is Optional[Literal[...]] == Union[Literal[...], None]
+    literal_args = set()
+    for arg in typing.get_args(field.annotation):
+        literal_args.update(typing.get_args(arg))
+    assert literal_args == {m.value for m in OverlayType}
