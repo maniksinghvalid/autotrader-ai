@@ -20,6 +20,16 @@ class LegSpec:
     position_effect: PositionEffect = "OPEN"
     ratio: int = 1
 
+    def __post_init__(self):
+        if self.right not in ("CALL", "PUT"):
+            raise ValueError(f"LegSpec.right must be CALL/PUT, got {self.right!r}")
+        if self.side not in ("BUY", "SELL"):
+            raise ValueError(f"LegSpec.side must be BUY/SELL, got {self.side!r}")
+        if self.position_effect not in ("OPEN", "CLOSE"):
+            raise ValueError(f"LegSpec.position_effect must be OPEN/CLOSE, got {self.position_effect!r}")
+        if self.ratio < 1:
+            raise ValueError(f"LegSpec.ratio must be >= 1, got {self.ratio}")
+
 
 @dataclass(frozen=True)
 class ExitRule:

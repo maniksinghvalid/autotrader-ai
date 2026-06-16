@@ -29,3 +29,17 @@ def test_unsupported_overlays_absent_from_registry():
     assert OverlayType.COLLAR not in REGISTRY
     assert OverlayType.CALL_DIAGONAL not in REGISTRY
     assert OverlayType.BEAR_PUT_SPREAD not in REGISTRY
+
+
+def test_exit_rule_constructs_and_is_frozen():
+    import dataclasses, pytest
+    r = ExitRule(dte_to_close=21, profit_target_pct=0.5)
+    assert r.close_on_reversal is True
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        r.dte_to_close = 1
+
+
+def test_legspec_rejects_bad_side():
+    import pytest
+    with pytest.raises(ValueError):
+        LegSpec(right="CALL", side="sell")
