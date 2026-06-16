@@ -13,6 +13,7 @@ from autotrader.broker import Broker
 from autotrader.config import RiskConfig, load_risk_config
 from autotrader.domain import OrderRequest, OrderState, Signal
 from autotrader.rebalance import compute_plan
+from autotrader.risk_check import evaluate as risk_evaluate, RiskAction
 from autotrader.risk_core import evaluate
 from autotrader.router import OrderRouter
 from autotrader.sizing import size_position
@@ -294,6 +295,48 @@ class TradeEngine:
         logger.info("REBALANCE complete: %d trade(s), %d skipped",
                     len(plan.trades), len(plan.skipped))
         return "REBALANCED"
+
+    def _flatten_all(self, snapshot, round_id: str) -> None:
+        """Liquidate every long position through the audited path. Called BEFORE
+        the halt flag is set, so the SELLs are not blocked by the halt guard."""
+        from autotrader.rebalance import RebalanceTrade
+        for p in snapshot.positions:
+            if p.qty <= 0:
+                continue
+            price = self._b.get_quote(p.symbol) or p.avg_price
+            trade = RebalanceTrade(p.symbol, "SELL", p.qty, "TRIM", 0)
+            res = self.submit_rebalance_order(trade, price, round_id)
+            logger.info("flatten %s qty=%d -> %s", p.symbol, p.qty, res.action)
+
+    def apply_risk_check(self, now) -> str:
+        """Tiered intraday preservation. GATE: close entries, keep positions +
+        stops. HALT: flatten all, cancel all, record the halt, set the session
+        halt flag. Returns the RiskAction name."""
+        snap = self._b.get_account()
+        action = risk_evaluate(snap, self._cfg)
+        if self._db:
+            self._db.record_performance(
+                day_pnl=snap.day_pnl, total_assets=snap.total_assets,
+                cash=snap.cash, gross_exposure=snap.gross_exposure())
+        if action is RiskAction.GATE:
+            if self._gate is not None:
+                self._gate.close()
+            logger.warning("RISK_CHECK soft breach: entries closed (pnl=%.2f)",
+                           snap.day_pnl)
+        elif action is RiskAction.HALT:
+            reason = f"daily loss halt: pnl={snap.day_pnl}"
+            round_id = f"halt-{now.date().isoformat()}"
+            self._flatten_all(snap, round_id)   # BEFORE halt flag (guard would block)
+            try:
+                self._b.cancel_all()
+            except Exception as e:
+                logger.error("RISK_CHECK halt: cancel_all failed: %s", e)
+            if self._gate is not None:
+                self._gate.halt()
+            if self._db:
+                self._db.record_halt(reason)
+            logger.error("RISK_CHECK HARD breach: flattened + halted (%s)", reason)
+        return action.value
 
     def shutdown(self) -> None:
         # Cancel-on-shutdown (CLAUDE.md). Best-effort flatten of working orders:
