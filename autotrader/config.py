@@ -24,10 +24,25 @@ class RiskConfig:
     risk_per_trade_pct: float = 0.0
     confidence_size_floor: float = 0.5   # size factor at confidence == min_confidence
     confidence_size_ceil: float = 1.0    # size factor at confidence == 1.0
+    # Portfolio rebalancing (additive; rebalance_enabled default off). Drift band
+    # is in percentage POINTS of weight; min_notional skips churn; cash_buffer is
+    # reserved off investable equity; staleness skips stale target snapshots.
+    rebalance_enabled: bool = False
+    rebalance_band_pct: float = 5.0
+    rebalance_min_notional: float = 200.0
+    rebalance_cash_buffer_pct: float = 10.0
+    target_staleness_hours: float = 24.0
+    # Hard daily-loss flatten+halt threshold (must exceed the soft daily_loss_limit,
+    # which gates new entries). Both are positive; breach when day_pnl <= -value.
+    daily_loss_halt: float = 1000.0
 
 
 def _f(name: str, default: float) -> float:
     return float(os.getenv(name, str(default)))
+
+
+def _b(name: str, default: bool) -> bool:
+    return os.getenv(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
 
 
 def load_risk_config() -> RiskConfig:
@@ -38,16 +53,28 @@ def load_risk_config() -> RiskConfig:
     env = os.getenv("RISK_TRADING_ENV", "PAPER").strip().upper()
     if env not in ("PAPER", "LIVE"):
         env = "PAPER"
+    daily_loss_limit = _f("RISK_DAILY_LOSS_LIMIT", 500)
+    daily_loss_halt = _f("RISK_DAILY_LOSS_HALT", 1000)
+    if daily_loss_halt <= daily_loss_limit:
+        raise ValueError(
+            f"RISK_DAILY_LOSS_HALT ({daily_loss_halt}) must exceed "
+            f"RISK_DAILY_LOSS_LIMIT ({daily_loss_limit})")
     return RiskConfig(
         trading_env=env,
         min_confidence=_f("RISK_MIN_CONFIDENCE", 0.6),
         max_order_notional=_f("RISK_MAX_ORDER_NOTIONAL", 2000),
         max_position_qty=int(_f("RISK_MAX_POSITION_QTY", 100)),
-        daily_loss_limit=_f("RISK_DAILY_LOSS_LIMIT", 500),
+        daily_loss_limit=daily_loss_limit,
         max_gross_exposure=_f("RISK_MAX_GROSS_EXPOSURE", 50000),
         allowed_symbols=symbols,
         trailing_stop_pct=_f("RISK_TRAILING_STOP_PCT", 0.0),
         risk_per_trade_pct=_f("RISK_PER_TRADE_PCT", 0.0),
         confidence_size_floor=_f("RISK_CONFIDENCE_SIZE_FLOOR", 0.5),
         confidence_size_ceil=_f("RISK_CONFIDENCE_SIZE_CEIL", 1.0),
+        rebalance_enabled=_b("RISK_REBALANCE_ENABLED", False),
+        rebalance_band_pct=_f("RISK_REBALANCE_BAND_PCT", 5.0),
+        rebalance_min_notional=_f("RISK_REBALANCE_MIN_NOTIONAL", 200.0),
+        rebalance_cash_buffer_pct=_f("RISK_REBALANCE_CASH_BUFFER_PCT", 10.0),
+        target_staleness_hours=_f("RISK_TARGET_STALENESS_HOURS", 24.0),
+        daily_loss_halt=daily_loss_halt,
     )
