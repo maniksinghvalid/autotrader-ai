@@ -152,3 +152,15 @@ def test_send_non_2xx_status_is_retried(tmp_path):
     _reporter(db, cap).send_eod_report(_now())   # must NOT raise
     assert len(cap.calls) == 3
     db.close()
+
+
+def test_send_build_failure_does_not_raise(tmp_path):
+    db = DB(str(tmp_path / "r.db"))
+    cap = _Capture(status=200)
+    r = _reporter(db, cap)
+    def _boom(now):
+        raise RuntimeError("db gone")
+    r._gather = _boom            # force the build phase to fail
+    r.send_eod_report(_now())    # must NOT raise
+    assert len(cap.calls) == 0   # never reached the POST
+    db.close()

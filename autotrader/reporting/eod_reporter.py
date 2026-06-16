@@ -164,7 +164,10 @@ class EODReporter:
         except Exception as e:
             logger.error("EOD report build failed: %s", e)
             return
-        self._post_with_retry(payload)
+        try:
+            self._post_with_retry(payload)
+        except Exception as e:  # defense in depth — the loop must never crash on a report
+            logger.error("EOD report POST unexpected error: %s", e)
 
     def _post_with_retry(self, payload: dict) -> None:
         last = None
