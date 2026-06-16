@@ -6,7 +6,7 @@ only — never the moomoo SDK."""
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Dict, List, Literal
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -17,6 +17,13 @@ class SignalChange(BaseModel):
     transition: List[str] = Field(default_factory=list)
     points_delta: int
     driver: str = ""
+    # Optional explicit option-overlay intent (D4). Absent => plain equity
+    # (today's behavior). Literal mirrors domain.OverlayType so this module stays
+    # pydantic-only; normalize.py converts the string to the enum.
+    overlay: Optional[Literal[
+        "COVERED_CALL", "PROTECTIVE_PUT", "COLLAR",
+        "CALL_DIAGONAL", "BEAR_PUT_SPREAD",
+    ]] = None
 
 
 class Catalyst(BaseModel):

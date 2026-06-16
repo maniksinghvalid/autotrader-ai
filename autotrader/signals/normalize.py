@@ -16,7 +16,7 @@ import logging
 import math
 from typing import List, Optional
 
-from autotrader.domain import Signal
+from autotrader.domain import OverlayType, Signal
 from autotrader.signals.schema import RoutineSignalPayload, SignalChange
 
 logger = logging.getLogger("autotrader.signals.normalize")
@@ -44,6 +44,7 @@ def normalize_change(change: SignalChange, confidence_scale: float = 10.0,
         rationale=f"{change.driver or 'external'}: "
                   f"{'/'.join(change.transition) or change.direction}",
         stop_price=stop_price,
+        overlay=OverlayType(change.overlay) if change.overlay else None,
     )
 
 
