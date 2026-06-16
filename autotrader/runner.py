@@ -19,6 +19,7 @@ from autotrader.clock import Clock
 from autotrader.lifecycle import EntryGate, ground_truth_sync
 from autotrader.scheduler import (
     LifecycleScheduler, PRE_OPEN_SYNC, ENTRY_OPEN, RISK_SWEEP, EOD_FLATTEN,
+    REBALANCE, RISK_CHECK_MID, RISK_CHECK_LATE,
 )
 
 logger = logging.getLogger("autotrader.runner")
@@ -45,29 +46,39 @@ class SessionRunner:
         self._db.record_performance(snap.day_pnl, snap.total_assets,
                                     snap.cash, snap.gross_exposure())
 
-    def _run_job(self, job: str) -> None:
+    def _run_job(self, job: str, now) -> None:
         if job == PRE_OPEN_SYNC:
-            ground_truth_sync(self._broker, self._db)
+            if self._broker is not None and self._db is not None:
+                ground_truth_sync(self._broker, self._db)
         elif job == ENTRY_OPEN:
             self._gate.open()
             logger.info("ENTRY_OPEN: entries enabled")
+        elif job == REBALANCE:
+            self._engine.rebalance(now)
+        elif job in (RISK_CHECK_MID, RISK_CHECK_LATE):
+            self._engine.apply_risk_check(now)
         elif job == RISK_SWEEP:
             self._gate.close()
-            ground_truth_sync(self._broker, self._db)
-            self._record_perf()
+            if self._broker is not None and self._db is not None:
+                ground_truth_sync(self._broker, self._db)
+                self._record_perf()
             logger.info("RISK_SWEEP: entries closed, ground truth + performance recorded")
         elif job == EOD_FLATTEN:
             self._gate.close()
-            self._broker.cancel_all()
-            self._record_perf()
+            if self._broker is not None:
+                self._broker.cancel_all()
+                self._record_perf()
             logger.info("EOD_FLATTEN: entries closed, all orders cancelled, performance committed")
 
     def run_once(self, now) -> str:
         """Execute one loop iteration. Returns the engine tick action, or
-        'HALTED_UNHEALTHY' if the watchdog could not restore the connection.
-        External inbox signals are routed only when healthy."""
+        'HALTED' if the gate is halted, or 'HALTED_UNHEALTHY' if the watchdog
+        could not restore the connection. External inbox signals are routed only
+        when healthy."""
         for job in self._sched.poll(now):
-            self._run_job(job)
+            self._run_job(job, now)
+        if self._gate is not None and self._gate.halted:
+            return "HALTED"
         if not self._watch.ensure_healthy():
             return "HALTED_UNHEALTHY"
         action = self._engine.tick().action

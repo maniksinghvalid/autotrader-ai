@@ -402,7 +402,8 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
     inbox_dir = os.getenv("AUTOTRADER_SIGNAL_INBOX")
     if inbox_dir:
         from autotrader.signals.inbox import SignalInbox
-        inbox = SignalInbox(os.path.expanduser(inbox_dir))
+        inbox = SignalInbox(os.path.expanduser(inbox_dir),
+                            on_targets=db.upsert_target_weights)
         logger.info("external-signal inbox at %s", inbox_dir)
     runner = SessionRunner(
         engine=engine, broker=broker, db=db, gate=gate,

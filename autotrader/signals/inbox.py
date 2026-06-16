@@ -44,13 +44,15 @@ def atomic_write_bytes(inbox_dir: Path, raw: bytes) -> Path:
 
 
 class SignalInbox:
-    def __init__(self, inbox_dir: str, confidence_scale: float = 10.0):
+    def __init__(self, inbox_dir: str, confidence_scale: float = 10.0,
+                 on_targets=None):
         self._dir = Path(inbox_dir)
         self._processed = self._dir / "processed"
         self._rejected = self._dir / "rejected"
         for d in (self._dir, self._processed, self._rejected):
             d.mkdir(parents=True, exist_ok=True)
         self._scale = confidence_scale
+        self._on_targets = on_targets
 
     def poll(self) -> List[Signal]:
         """Validate + normalize every top-level *.json file, moving each out of
@@ -62,6 +64,11 @@ class SignalInbox:
             try:
                 payload = RoutineSignalPayload.model_validate_json(
                     path.read_text(encoding="utf-8"))
+                if payload.portfolio_targets and self._on_targets is not None:
+                    self._on_targets(
+                        payload.timestamp.date().isoformat(),
+                        [(t.symbol.upper(), float(t.score))
+                         for t in payload.portfolio_targets])
                 signals.extend(normalize_payload(payload, self._scale))
             except (ValidationError, ValueError, OSError) as e:
                 logger.warning("rejected signal file %s: %s", path.name, e)
