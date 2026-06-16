@@ -69,3 +69,34 @@ def test_gather_handles_missing_signal(tmp_path):
     assert len(data.activity) == 1
     assert data.activity[0].signal is None
     db.close()
+
+
+def test_render_full_report_text_and_blocks(tmp_path):
+    db = DB(str(tmp_path / "r.db"))
+    _seed(db)
+    r = _reporter(db, lambda url, payload: 200)
+    payload = r._render(r._gather(_now()))
+    text = payload["text"]
+    assert "Tue, Jun 16 2026" in text and "PAPER" in text
+    assert "+842.13" in text                  # day P&L, signed
+    assert "BUY US.AAPL" in text and "16" in text
+    assert "198.38" in text or "198.37" in text  # weighted avg, 2dp
+    assert "momentum breakout" in text and "0.82" in text
+    assert "US.AAPL 16" in text               # open positions
+    assert isinstance(payload["blocks"], list) and len(payload["blocks"]) >= 3
+    assert payload["blocks"][0]["type"] == "header"
+    db.close()
+
+
+def test_render_quiet_day_heartbeat(tmp_path):
+    db = DB(str(tmp_path / "r.db"))
+    db._conn.execute(
+        "INSERT INTO performance (date,day_pnl,total_assets,cash,gross_exposure,updated_at) "
+        "VALUES (?,?,?,?,?,?)",
+        (_DAY, 0.0, 100000.0, 100000.0, 0.0, _DAY + "T20:30:00+00:00"))
+    db._conn.commit()
+    r = _reporter(db, lambda url, payload: 200)
+    payload = r._render(r._gather(_now()))
+    assert "no trades today" in payload["text"].lower()
+    assert "100,000" in payload["text"]       # P&L header still present
+    db.close()

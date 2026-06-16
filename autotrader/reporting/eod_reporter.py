@@ -97,3 +97,62 @@ class EODReporter:
             activity=tuple(activity),
             positions=tuple((r[0], r[1]) for r in positions),
         )
+
+    @staticmethod
+    def _pnl_pct(d: ReportData) -> float:
+        base = (d.total_assets or 0.0) - (d.day_pnl or 0.0)
+        return (d.day_pnl / base * 100) if base else 0.0
+
+    @staticmethod
+    def _gross_pct(d: ReportData) -> float:
+        return (d.gross_exposure / d.total_assets * 100) if d.total_assets else 0.0
+
+    def _render(self, d: ReportData) -> dict:
+        lines = [f"AutoTrader session summary — {d.date_label} ({d.trading_env})"]
+        if d.total_assets is not None:
+            lines.append(
+                f"Day P&L: {d.day_pnl:+,.2f} ({self._pnl_pct(d):+.2f}%) | "
+                f"Assets: {d.total_assets:,.0f} | Cash: {d.cash:,.0f} | "
+                f"Gross exp: {self._gross_pct(d):.0f}%")
+        if d.activity:
+            lines.append(f"Activity — {len(d.activity)} trade(s):")
+            for t in d.activity:
+                s = f"  {t.side} {t.symbol} x{int(t.qty)} @ {t.avg_price:,.2f}"
+                if t.signal:
+                    s += (f"  [signal {t.signal.direction} conf "
+                          f"{t.signal.confidence:.2f}: {t.signal.rationale}]")
+                lines.append(s)
+        else:
+            lines.append("Activity — no trades today")
+        pos = " · ".join(f"{sym} {qty}" for sym, qty in d.positions) or "none"
+        lines.append(f"Open positions ({len(d.positions)}): {pos}")
+        return {"text": "\n".join(lines), "blocks": self._build_blocks(d)}
+
+    def _build_blocks(self, d: ReportData) -> list:
+        blocks = [{"type": "header", "text": {"type": "plain_text",
+                   "text": f"Session summary — {d.date_label} ({d.trading_env})"}}]
+        if d.total_assets is not None:
+            blocks.append({"type": "section", "fields": [
+                {"type": "mrkdwn", "text": f"*Day P&L*\n{d.day_pnl:+,.2f} ({self._pnl_pct(d):+.2f}%)"},
+                {"type": "mrkdwn", "text": f"*Total assets*\n{d.total_assets:,.0f}"},
+                {"type": "mrkdwn", "text": f"*Cash*\n{d.cash:,.0f}"},
+                {"type": "mrkdwn", "text": f"*Gross exp.*\n{self._gross_pct(d):.0f}%"},
+            ]})
+        blocks.append({"type": "divider"})
+        if d.activity:
+            rows = []
+            for t in d.activity:
+                row = f"*{t.side} {t.symbol}* ×{int(t.qty)} @ {t.avg_price:,.2f}"
+                if t.signal:
+                    row += (f"\n_signal {t.signal.direction} · conf "
+                            f"{t.signal.confidence:.2f} · {t.signal.rationale}_")
+                rows.append(row)
+            blocks.append({"type": "section", "text": {"type": "mrkdwn",
+                           "text": f"*Activity — {len(d.activity)} trade(s)*\n" + "\n".join(rows)}})
+        else:
+            blocks.append({"type": "section", "text": {"type": "mrkdwn",
+                           "text": "*Activity*\nNo trades today"}})
+        pos = " · ".join(f"{sym} {qty}" for sym, qty in d.positions) or "none"
+        blocks.append({"type": "section", "text": {"type": "mrkdwn",
+                       "text": f"*Open positions ({len(d.positions)})*\n{pos}"}})
+        return blocks
