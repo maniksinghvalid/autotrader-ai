@@ -5,11 +5,49 @@ from __future__ import annotations
 import enum
 import math
 from dataclasses import dataclass, field
+from datetime import date
 from types import MappingProxyType
 from typing import Literal, Mapping, Optional, Tuple
 
 Side = Literal["BUY", "SELL"]
 OrderType = Literal["MARKET", "LIMIT", "TRAILING_STOP"]
+OptionRight = Literal["CALL", "PUT"]
+PositionEffect = Literal["OPEN", "CLOSE"]
+
+
+class OverlayType(enum.Enum):
+    """Full option-strategy range. O1 implements COVERED_CALL + PROTECTIVE_PUT;
+    the rest are declared so the schema/enum never needs to change to add them —
+    the planner rejects any value with no registry entry (SKIP_UNSUPPORTED_OVERLAY)."""
+    COVERED_CALL = "COVERED_CALL"
+    PROTECTIVE_PUT = "PROTECTIVE_PUT"
+    COLLAR = "COLLAR"
+    CALL_DIAGONAL = "CALL_DIAGONAL"
+    BEAR_PUT_SPREAD = "BEAR_PUT_SPREAD"
+
+
+@dataclass(frozen=True)
+class OptionContract:
+    """A concrete tradable option. `code` is the moomoo option code (e.g.
+    US.AAPL260717C200000). `multiplier` is shares per contract (US equity opts = 100)."""
+    underlying: str
+    expiry: date
+    strike: float
+    right: OptionRight
+    code: str
+    multiplier: int = 100
+
+    def __post_init__(self):
+        if self.right not in ("CALL", "PUT"):
+            raise ValueError(f"OptionContract.right must be CALL/PUT, got {self.right!r}")
+        if not self.underlying:
+            raise ValueError("underlying must not be empty")
+        if not self.code:
+            raise ValueError("code must not be empty")
+        if not math.isfinite(self.strike) or self.strike <= 0:
+            raise ValueError(f"strike must be positive finite, got {self.strike}")
+        if self.multiplier <= 0:
+            raise ValueError(f"multiplier must be > 0, got {self.multiplier}")
 
 
 class OrderState(enum.Enum):
@@ -47,6 +85,7 @@ class Signal:
     confidence: float
     rationale: str
     stop_price: Optional[float] = None   # per-signal hard stop; None = none supplied
+    overlay: Optional[OverlayType] = None   # None = plain equity signal (default)
 
     def __post_init__(self):
         if self.direction not in ("BUY", "SELL"):
@@ -67,10 +106,15 @@ class OrderRequest:
     limit_price: Optional[float]
     client_order_id: str
     trail_percent: Optional[float] = None   # required for TRAILING_STOP; else None
+    option: Optional[OptionContract] = None    # None = equity order (default)
+    position_effect: PositionEffect = "OPEN"     # OPEN/CLOSE (close logic: O4)
+    correlation_id: Optional[str] = None         # groups legs of one overlay (multi-leg: O2)
 
     def __post_init__(self):
         if self.side not in ("BUY", "SELL"):
             raise ValueError(f"OrderRequest.side must be BUY/SELL, got {self.side!r}")
+        if self.position_effect not in ("OPEN", "CLOSE"):
+            raise ValueError(f"position_effect must be OPEN/CLOSE, got {self.position_effect!r}")
         if self.qty <= 0:
             raise ValueError("OrderRequest.qty must be > 0")
         if self.order_type == "LIMIT" and self.limit_price is None:
