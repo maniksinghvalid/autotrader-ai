@@ -75,13 +75,19 @@ export FUTU_ACC_ID=<your SIMULATE acc_id>
 | `RISK_DAILY_LOSS_LIMIT` | `500` | Halt trading when `day_pnl <= -limit`. |
 | `RISK_MAX_GROSS_EXPOSURE` | `50000` | Gross exposure cap after an order. |
 | `RISK_TRAILING_STOP_PCT` | `0.0` | Broker-resting trailing-stop % on each BUY entry. `0` disables; `5.0` = 5% (see §7). |
-| `RISK_ALLOWED_OVERLAYS` | *(empty → options off)* | **DEFAULT OFF.** Comma list of enabled overlays, e.g. `COVERED_CALL,PROTECTIVE_PUT`. Requires human review before enabling. See `config/risk.config.example`. |
+| `RISK_ALLOWED_OVERLAYS` | *(empty → options off)* | **DEFAULT OFF.** Comma-separated list of enabled overlays (case-insensitive): `COVERED_CALL`, `PROTECTIVE_PUT`, `COLLAR`, `BEAR_PUT_SPREAD`, `CALL_DIAGONAL`, `LEAP`. Requires human review before enabling. See `config/risk.config.example`. |
 | `RISK_MAX_OPTION_CONTRACTS` | `0` | Per-leg contract cap. `0` = options fully disabled. |
-| `RISK_MAX_OPTION_PREMIUM_PER_TRADE` | `0` | Max debit ($) per long option leg. |
-| `RISK_OPTION_TARGET_DELTA` | `0.30` | Delta target for contract selection. |
-| `RISK_OPTION_DTE_MIN` / `RISK_OPTION_DTE_MAX` | `30` / `45` | DTE window for contract selection. |
+| `RISK_OPTION_DEFAULT_CONTRACTS` | `1` | Contract count for strategies not sized off held shares — `BEAR_PUT_SPREAD`, `CALL_DIAGONAL`, `LEAP`. Covered call and collar still size off held shares (`min(shares//100, RISK_MAX_OPTION_CONTRACTS)`). |
+| `RISK_OPTION_MAX_RISK_PCT` | `0.02` | **NLV-derived premium cap** (fraction of `total_assets`). Debit legs (long call/put, protective put, LEAP, long diagonal leg) cap premium paid at `NLV × pct`; credit legs (covered call, collar short call, spread/PMCC short leg) cap premium collected at `NLV × pct / 2` (the 200% stop ⟹ max loss = 2× premium). Scales automatically with equity — set `0.01` for a tighter 1% ceiling. |
+| `RISK_MAX_OPTION_PREMIUM_PER_TRADE` | `0` (off) | Optional absolute dollar ceiling layered on top of the NLV cap; when set, the tighter of the two binds. `0` disables. |
+| `RISK_OPTION_TARGET_DELTA` | `0.30` | Fallback delta target for legs that declare no per-leg override (covered call, protective put). Multi-leg strategies declare their own per-leg delta/DTE targets structurally in `options/overlays.py`. |
+| `RISK_OPTION_DTE_MIN` / `RISK_OPTION_DTE_MAX` | `30` / `45` | Fallback DTE window for contract selection (same fallback scope as `RISK_OPTION_TARGET_DELTA`). |
 | `RISK_OPTION_DTE_TO_CLOSE` | `7` | DTE at which an exit is declared (enforced in O4). |
 | `RISK_OPTION_PROFIT_TARGET_PCT` | `0.5` | Profit-target fraction for exit (enforced in O4). |
+
+> **Partial fill (`OVERLAY_RESIDUAL_LONG`):** multi-leg overlays submit the long leg first. If a later (short) leg fails after the long has filled, the engine returns `OVERLAY_RESIDUAL_LONG` and leaves the long-only position in place — it is never a naked short. There is no automatic unwind; the residual is risk-defined by the long premium.
+>
+> **Deferred:** the 200% stop-loss for credit legs (converting the entry-discipline cap into a hard exit) is enforced in O4. The 5% buying-power rule is a further follow-up. Until then the no-naked-short coverage guard is the hard safety guarantee.
 
 **OpenD connection (`FUTU_*`)** — read by the vendored `common.py`:
 

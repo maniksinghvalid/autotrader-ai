@@ -55,10 +55,12 @@ RISK_DAILY_LOSS_HALT=1000
 # Leave RISK_ALLOWED_OVERLAYS empty and RISK_MAX_OPTION_CONTRACTS=0 to keep options
 # disabled (the defaults). Enable only after explicit human review of each limit.
 # Risk-limit CHANGES require explicit human review (CLAUDE.md).
-RISK_ALLOWED_OVERLAYS=                 # e.g. COVERED_CALL,PROTECTIVE_PUT
+RISK_ALLOWED_OVERLAYS=                 # e.g. COVERED_CALL,PROTECTIVE_PUT,COLLAR,BEAR_PUT_SPREAD,CALL_DIAGONAL,LEAP
 RISK_MAX_OPTION_CONTRACTS=0            # per-leg contract cap (0 = options off)
-RISK_MAX_OPTION_PREMIUM_PER_TRADE=0    # max debit ($) per long leg
-RISK_OPTION_TARGET_DELTA=0.30          # contract-selection delta target
+RISK_OPTION_DEFAULT_CONTRACTS=1        # contract count for non-share-covered strategies (BEAR_PUT_SPREAD, CALL_DIAGONAL, LEAP)
+RISK_OPTION_MAX_RISK_PCT=0.02          # NLV-derived cap: debit legs pay ≤ NLV*pct; credit legs collect ≤ NLV*pct/2
+RISK_MAX_OPTION_PREMIUM_PER_TRADE=0    # optional absolute dollar ceiling on top of the NLV cap (0 = off)
+RISK_OPTION_TARGET_DELTA=0.30          # fallback delta target (covered call, protective put)
 RISK_OPTION_DTE_MIN=30
 RISK_OPTION_DTE_MAX=45
 RISK_OPTION_DTE_TO_CLOSE=7             # exit declaration (enforced in O4)
