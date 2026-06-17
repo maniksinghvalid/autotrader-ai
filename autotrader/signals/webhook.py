@@ -19,6 +19,7 @@ from typing import Optional
 from flask import Flask, jsonify, request
 from pydantic import ValidationError
 
+from autotrader.signals.coerce import coerce_payload
 from autotrader.signals.schema import RoutineSignalPayload
 
 logger = logging.getLogger("autotrader.signals.webhook")
@@ -87,8 +88,26 @@ def create_app(inbox_dir: str, secret: str, max_body: int = _MAX_BODY_DEFAULT) -
         try:
             payload = RoutineSignalPayload.model_validate_json(raw)  # bad JSON or schema -> 400
         except ValidationError as e:
-            # Strict rejection (never relaxed), but the body is PRESERVED for diagnosis +
-            # replay, and the caller (already authenticated) gets field-level reasons back.
+            # The strict shape failed. Before rejecting, try to coerce the KNOWN drifted
+            # shapes (run_id/sweep_date/signals aliases) back onto the canonical schema.
+            # This is NOT a relaxation of the enqueue invariant: a coerced body is
+            # re-validated below, and only the validated CANONICAL bytes are enqueued —
+            # so the inbox still receives a strict RoutineSignalPayload (CLAUDE.md).
+            coerced = coerce_payload(raw)
+            if coerced is not None:
+                try:
+                    payload = RoutineSignalPayload.model_validate_json(coerced)
+                except ValidationError:
+                    payload = None
+                if payload is not None:
+                    path = _atomic_enqueue(inbox, coerced)
+                    logger.info("webhook enqueued (coerced) %s (routine_id=%s, %d change(s))",
+                                path.name, payload.routine_id, len(payload.signal_changes))
+                    return jsonify({"status": "accepted", "coerced": True,
+                                    "routine_id": payload.routine_id,
+                                    "signals": len(payload.signal_changes)}), 202
+            # Unrecoverable. Body is PRESERVED for diagnosis + replay, and the caller
+            # (already authenticated) gets field-level reasons back.
             qpath = _quarantine(inbox, raw)
             logger.warning("webhook payload rejected, quarantined %s: %s", qpath.name, e)
             detail = [{"loc": ".".join(str(p) for p in err["loc"]), "msg": err["msg"]}

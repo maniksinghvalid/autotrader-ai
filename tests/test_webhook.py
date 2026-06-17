@@ -119,6 +119,41 @@ def test_enqueued_file_is_consumed_by_inbox_end_to_end(tmp_path):
     assert sigs[0].symbol == "US.AAPL" and sigs[0].direction == "BUY"
 
 
+def test_drifted_payload_is_coerced_enqueued_and_consumed(tmp_path):
+    # The shape the daily-sweep agent emitted (run_id/sweep_date/signals + an int
+    # signal_changes) is accepted (202, coerced), enqueued as CANONICAL bytes, and
+    # consumed by the same strict inbox the trader uses.
+    drifted = json.dumps({
+        "run_id": "routine-20260617-1637-4fea27",
+        "sweep_date": "2026-06-17",
+        "signal_changes": 1,
+        "signals": [
+            {"ticker": "XEQT", "signal": "BUY", "prior_signal": "BUY", "changed": False},
+            {"ticker": "AAPL", "signal": "BUY", "prior_signal": "HOLD",
+             "direction": "upgrade", "points_delta": 8, "changed": True},
+        ],
+    }).encode()
+    c, inbox_path = _client(tmp_path)
+    r = c.post("/webhook/sweep", data=drifted, headers=_headers(body=drifted))
+    assert r.status_code == 202
+    body = r.get_json()
+    assert body["coerced"] is True and body["signals"] == 1   # unchanged XEQT dropped
+    # enqueued file is canonical (re-validates) and the trader consumes it
+    sigs = SignalInbox(str(inbox_path)).poll()
+    assert len(sigs) == 1
+    assert sigs[0].symbol == "US.AAPL" and sigs[0].direction == "BUY"
+
+
+def test_unsalvageable_payload_still_400s(tmp_path):
+    c, inbox = _client(tmp_path)
+    bad = json.dumps({"run_id": "r", "sweep_date": "2026-06-17",
+                      "signals": [{"ticker": "AAPL", "direction": "SIDEWAYS"}]}).encode()
+    r = c.post("/webhook/sweep", data=bad, headers=_headers(body=bad))
+    assert r.status_code == 400
+    assert list(inbox.glob("*.json")) == []
+    assert len(list((inbox / "rejected").glob("*.json"))) == 1
+
+
 def test_webhook_module_does_not_import_moomoo_sdk():
     code = ("import importlib, sys\n"
             "importlib.import_module('autotrader.signals.webhook')\n"
