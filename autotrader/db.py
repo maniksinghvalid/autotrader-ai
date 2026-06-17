@@ -90,6 +90,15 @@ CREATE TABLE IF NOT EXISTS target_weights (
     ingested_at TEXT NOT NULL,
     PRIMARY KEY (as_of_date, symbol)
 );
+
+CREATE TABLE IF NOT EXISTS drivers (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts      TEXT NOT NULL,
+    symbol  TEXT NOT NULL,
+    side    TEXT NOT NULL CHECK(side IN ('BUY','SELL')),
+    kind    TEXT NOT NULL,         -- non-signal trade driver, e.g. 'rebalance'
+    detail  TEXT NOT NULL          -- human reason, e.g. 'rbal-2026-06-17 · overweight → trim'
+);
 """
 
 
@@ -117,6 +126,16 @@ class DB:
                 "INSERT OR IGNORE INTO signals "
                 "(ts,symbol,direction,confidence,rationale,signal_id) VALUES (?,?,?,?,?,?)",
                 (_now(), symbol, direction, confidence, rationale, signal_id),
+            )
+            self._conn.commit()
+
+    def record_driver(self, symbol: str, side: str, kind: str, detail: str) -> None:
+        """Record a non-signal trade driver (e.g. a rebalance trim/top-up) so the
+        EOD report can attribute a trade that never produced a domain.Signal."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO drivers (ts,symbol,side,kind,detail) VALUES (?,?,?,?,?)",
+                (_now(), symbol, side, kind, detail),
             )
             self._conn.commit()
 

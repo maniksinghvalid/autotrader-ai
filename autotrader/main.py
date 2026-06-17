@@ -291,6 +291,14 @@ class TradeEngine:
             return TickResult("ORDER_UNKNOWN", ack.client_order_id)
         if ack.state is OrderState.REJECTED:
             return TickResult("ORDER_REJECTED", ack.client_order_id)
+        if self._db:
+            # Rebalance/flatten trades carry no domain.Signal; leave a driver row so
+            # the EOD report can explain them (round_id prefix distinguishes a
+            # rebalance reconciliation from a loss-halt liquidation).
+            kind = "liquidation" if round_id.startswith("halt") else "rebalance"
+            reason = {"TRIM": "overweight → trim",
+                      "TOPUP": "underweight → top-up"}.get(trade.action, trade.action.lower())
+            self._db.record_driver(trade.symbol, trade.side, kind, f"{round_id} · {reason}")
         return TickResult("ORDER_PLACED", str(ack.broker_order_id))
 
     def consolidate_stop(self, symbol: str, new_total_qty: int,

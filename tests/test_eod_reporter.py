@@ -68,6 +68,54 @@ def test_gather_handles_missing_signal(tmp_path):
     data = r._gather(_now())
     assert len(data.activity) == 1
     assert data.activity[0].signal is None
+    assert data.activity[0].driver is None      # no signal AND no driver -> bare line
+    db.close()
+
+
+def test_gather_links_rebalance_driver_when_no_signal(tmp_path):
+    # A rebalance trade has no Signal; instead it leaves a `drivers` row, which the
+    # report attaches so the trade is explained ("why did this happen?").
+    db = DB(str(tmp_path / "r.db"))
+    _seed(db, with_signal=False)
+    db._conn.execute(
+        "INSERT INTO drivers (ts,symbol,side,kind,detail) VALUES (?,?,?,?,?)",
+        (_DAY + "T13:58:00+00:00", "US.AAPL", "BUY", "rebalance",
+         "rbal-2026-06-16 · underweight → top-up"))
+    db._conn.commit()
+    r = _reporter(db, lambda url, payload: 200)
+    line = r._gather(_now()).activity[0]
+    assert line.signal is None
+    assert line.driver is not None
+    assert line.driver.kind == "rebalance"
+    assert "underweight → top-up" in line.driver.detail
+
+
+def test_signal_takes_precedence_over_rebalance_driver(tmp_path):
+    # If a trade has BOTH a signal and a driver row, the signal (the real thesis) wins.
+    db = DB(str(tmp_path / "r.db"))
+    _seed(db, with_signal=True)
+    db._conn.execute(
+        "INSERT INTO drivers (ts,symbol,side,kind,detail) VALUES (?,?,?,?,?)",
+        (_DAY + "T13:58:00+00:00", "US.AAPL", "BUY", "rebalance",
+         "rbal-2026-06-16 · underweight → top-up"))
+    db._conn.commit()
+    r = _reporter(db, lambda url, payload: 200)
+    line = r._gather(_now()).activity[0]
+    assert line.signal is not None
+    assert line.driver is None
+
+
+def test_render_shows_rebalance_driver(tmp_path):
+    db = DB(str(tmp_path / "r.db"))
+    _seed(db, with_signal=False)
+    db._conn.execute(
+        "INSERT INTO drivers (ts,symbol,side,kind,detail) VALUES (?,?,?,?,?)",
+        (_DAY + "T13:58:00+00:00", "US.AAPL", "BUY", "rebalance",
+         "rbal-2026-06-16 · underweight → top-up"))
+    db._conn.commit()
+    r = _reporter(db, lambda url, payload: 200)
+    text = r._render(r._gather(_now()))["text"]
+    assert "[rebalance rbal-2026-06-16 · underweight → top-up]" in text
     db.close()
 
 

@@ -40,6 +40,25 @@ def test_partial_sell_routes_through_risk_and_records(tmp_path):
     db.close()
 
 
+def test_rebalance_order_records_driver_for_eod_attribution(tmp_path):
+    # A placed rebalance order records a `drivers` row so the EOD report can
+    # explain a trade that has no driving Signal (rebalance trades never create one).
+    broker = SimBroker({"US.AAPL": 100.0})
+    gate = EntryGate(enabled=True)
+    eng, db = _engine(tmp_path, broker, _cfg(), gate)
+    from autotrader.domain import OrderRequest
+    broker.place_order(OrderRequest("US.AAPL", "BUY", 80, "MARKET", None, "seed"))
+    trade = RebalanceTrade("US.AAPL", "SELL", 35, "TRIM", 45)
+    res = eng.submit_rebalance_order(trade, ref_price=100.0, round_id="rbal-2026-06-17")
+    assert res.action == "ORDER_PLACED"
+    row = db._conn.execute(
+        "SELECT symbol, side, kind, detail FROM drivers WHERE symbol='US.AAPL'").fetchone()
+    assert row is not None
+    assert row[0] == "US.AAPL" and row[1] == "SELL" and row[2] == "rebalance"
+    assert "rbal-2026-06-17" in row[3] and "trim" in row[3].lower()
+    db.close()
+
+
 def test_topup_blocked_when_gate_closed(tmp_path):
     broker = SimBroker({"US.AAPL": 100.0})
     gate = EntryGate(enabled=False)

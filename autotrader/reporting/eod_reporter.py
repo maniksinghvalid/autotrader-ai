@@ -26,12 +26,21 @@ class SignalRef:
 
 
 @dataclass(frozen=True)
+class DriverRef:
+    """Non-signal attribution for a trade (e.g. a rebalance trim/top-up), so a
+    trade with no driving Signal is still explained in the report."""
+    kind: str
+    detail: str
+
+
+@dataclass(frozen=True)
 class TradeLine:
     side: str
     symbol: str
     qty: float
     avg_price: float
     signal: Optional[SignalRef] = None
+    driver: Optional[DriverRef] = None
 
 
 @dataclass(frozen=True)
@@ -83,8 +92,17 @@ class EODReporter:
                 "WHERE symbol=? AND direction=? AND substr(ts,1,10)=? "
                 "ORDER BY id DESC LIMIT 1", (symbol, side, today)).fetchone()
             signal = SignalRef(sig[0], sig[1], sig[2]) if sig else None
+            # Fall back to a non-signal driver (e.g. rebalance) only when there is no
+            # Signal — the Signal is the real thesis and takes precedence.
+            driver = None
+            if signal is None:
+                drv = c.execute(
+                    "SELECT kind, detail FROM drivers "
+                    "WHERE symbol=? AND side=? AND substr(ts,1,10)=? "
+                    "ORDER BY id DESC LIMIT 1", (symbol, side, today)).fetchone()
+                driver = DriverRef(drv[0], drv[1]) if drv else None
             activity.append(TradeLine(side=side, symbol=symbol, qty=qty,
-                                      avg_price=avg_price, signal=signal))
+                                      avg_price=avg_price, signal=signal, driver=driver))
         positions = c.execute(
             "SELECT symbol, qty FROM positions WHERE qty != 0 ORDER BY symbol").fetchall()
         return ReportData(
@@ -121,6 +139,8 @@ class EODReporter:
                 if t.signal:
                     s += (f"  [signal {t.signal.direction} conf "
                           f"{t.signal.confidence:.2f}: {t.signal.rationale}]")
+                elif t.driver:
+                    s += f"  [{t.driver.kind} {t.driver.detail}]"
                 lines.append(s)
         else:
             lines.append("Activity — no trades today")
@@ -146,6 +166,8 @@ class EODReporter:
                 if t.signal:
                     row += (f"\n_signal {t.signal.direction} · conf "
                             f"{t.signal.confidence:.2f} · {t.signal.rationale}_")
+                elif t.driver:
+                    row += f"\n_{t.driver.kind} · {t.driver.detail}_"
                 rows.append(row)
             blocks.append({"type": "section", "text": {"type": "mrkdwn",
                            "text": f"*Activity — {len(d.activity)} trade(s)*\n" + "\n".join(rows)}})
