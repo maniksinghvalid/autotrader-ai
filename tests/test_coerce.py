@@ -14,9 +14,12 @@ def _validate(raw: bytes) -> RoutineSignalPayload:
     return RoutineSignalPayload.model_validate_json(raw)
 
 
-def test_run1637_shape_is_coerced_to_one_change():
+def test_run1637_neutral_destination_is_non_actionable():
     # run_id->routine_id, sweep_date->timestamp, signal_changes is an int count,
-    # the array lives under "signals", and only the changed row is directional.
+    # the array lives under "signals". YNVDA is the only "changed" row, but it
+    # transitions INTO NEUTRAL -- a non-actionable destination. Per D1 the canonical
+    # adapter drops HOLD/NEUTRAL destinations, so the webhook must too: the sweep is
+    # accepted with ZERO changes (an "upgrade/downgrade to NEUTRAL" is never a trade).
     raw = json.dumps({
         "run_id": "routine-20260617-1637-4fea27",
         "sweep_date": "2026-06-17",
@@ -33,15 +36,13 @@ def test_run1637_shape_is_coerced_to_one_change():
     assert out is not None
     p = _validate(out)
     assert p.routine_id == "routine-20260617-1637-4fea27"
-    assert len(p.signal_changes) == 1                       # unchanged XEQT dropped
-    c = p.signal_changes[0]
-    assert c.ticker == "YNVDA" and c.direction == "DOWN"
-    assert c.transition == ["HOLD", "NEUTRAL"]
-    assert "NVIDIA" in c.driver
+    assert p.signal_changes == []          # NEUTRAL destination dropped; nothing to trade
 
 
-def test_prior_label_shape_infers_direction_from_signal_rank():
-    # items carry only {ticker, signal, score, prior}: no explicit direction.
+def test_destination_label_drives_direction_and_drops_holds():
+    # No explicit direction field: D1 keys direction off the DESTINATION label.
+    # BUY -> UP (entry). A transition INTO HOLD is non-actionable and dropped --
+    # critically, BUY->HOLD is NOT a sell (the old rank-based inference made it one).
     raw = json.dumps({
         "run_id": "r1", "sweep_date": "2026-06-17", "ticker_count": 3,
         "signature": "deadbeef",
@@ -53,9 +54,52 @@ def test_prior_label_shape_infers_direction_from_signal_rank():
     }).encode()
     p = _validate(coerce_payload(raw))
     by = {c.ticker: c for c in p.signal_changes}
-    assert set(by) == {"DIVO", "XEQT"}                      # unchanged IAU dropped
-    assert by["DIVO"].direction == "DOWN"                   # BUY -> HOLD
-    assert by["XEQT"].direction == "UP"                     # HOLD -> BUY
+    assert set(by) == {"XEQT"}                 # DIVO & IAU HOLD destinations dropped
+    assert by["XEQT"].direction == "UP"        # HOLD -> BUY
+    assert by["XEQT"].points_delta == 7        # D2: round(73/10)
+
+
+def test_buy_without_score_gets_zero_conviction_not_a_fabricated_trade():
+    # Regression: a drifted upgrade INTO BUY with no score must NOT fabricate
+    # conviction. points_delta 0 -> confidence 0 -> the risk core will not trade it.
+    # (Previously a default magnitude could push a sourceless BUY past the gate.)
+    raw = json.dumps({
+        "run_id": "r7", "sweep_date": "2026-06-17",
+        "signals": [{"ticker": "AAPL", "prior_signal": "HOLD", "signal": "BUY",
+                     "changed": True, "direction": "upgrade"}],
+    }).encode()
+    p = _validate(coerce_payload(raw))
+    assert len(p.signal_changes) == 1
+    assert p.signal_changes[0].direction == "UP"
+    assert p.signal_changes[0].points_delta == 0
+
+
+def test_exit_label_gets_fixed_high_conviction():
+    # Destination CAUTION/AVOID/SELL -> DOWN with D2's fixed -10 (exits always clear
+    # the confidence gate), independent of the score.
+    raw = json.dumps({
+        "run_id": "r8", "sweep_date": "2026-06-17",
+        "signals": [{"ticker": "SPCE", "prior_signal": "NEUTRAL", "signal": "CAUTION",
+                     "score": 26, "changed": True}],
+    }).encode()
+    p = _validate(coerce_payload(raw))
+    assert len(p.signal_changes) == 1
+    assert p.signal_changes[0].direction == "DOWN"
+    assert p.signal_changes[0].points_delta == -10
+
+
+def test_canonical_shaped_change_without_labels_passes_through():
+    # An almost-canonical drifted payload (aliased top-level keys, but the change
+    # object already carries an explicit direction + points_delta and no signal
+    # labels) is shape-normalized as-is -- no D1/D2 inference, just field mapping.
+    raw = json.dumps({
+        "run_id": "r9", "generated_at": "2026-06-16T12:15:00Z",
+        "signal_changes": [{"symbol": "MSFT", "direction": "DOWN", "points_delta": -4}],
+    }).encode()
+    p = _validate(coerce_payload(raw))
+    assert len(p.signal_changes) == 1
+    c = p.signal_changes[0]
+    assert c.ticker == "MSFT" and c.direction == "DOWN" and c.points_delta == -4
 
 
 def test_explicit_points_delta_and_aliases():
@@ -123,4 +167,5 @@ def test_hard_stops_and_catalysts_pass_through():
     p = _validate(coerce_payload(raw))
     assert p.hard_stops == {"SPCE": 1.0}
     assert len(p.catalysts) == 1 and p.catalysts[0].ticker == "SPCE"
-    assert p.signal_changes[0].direction == "DOWN" and p.signal_changes[0].points_delta == -6
+    # D1/D2: CAUTION destination -> DOWN exit at the fixed -10 conviction.
+    assert p.signal_changes[0].direction == "DOWN" and p.signal_changes[0].points_delta == -10

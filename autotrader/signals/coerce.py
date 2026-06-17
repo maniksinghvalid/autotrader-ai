@@ -9,16 +9,32 @@ JSON, drifting onto alternate field names (seen in #portfolio-updates):
                signals           -> signal_changes   (when signal_changes is a
                                                        non-list, e.g. an int count)
   per change:  symbol|qualified_symbol -> ticker
-               direction 'UPGRADE'/'DOWNGRADE'/'up'/'down' -> 'UP'/'DOWN'
-               missing points_delta  -> derive from new_score-prior_score, else
-                                        from a label-actionability default
+               direction + magnitude  <- the DESTINATION label (D1/D2), NOT the
+                                          source's up/down field; see below
                missing transition    -> build from prior_signal|prior + new_signal|signal
                driver                <- catalyst|event
 
-`coerce_payload` maps those known shapes back onto the canonical schema's field
-names and returns canonical JSON bytes. It is a SHAPE normalizer ONLY:
+The per-change mapping mirrors the canonical builder's user-confirmed contract in
+routine_adapter.py, so the webhook and the file-drop adapter agree on what is a
+trade (they must — both feed the same risk core):
 
-  * It never fabricates the irreducible fields — a payload missing both
+  D1  direction + actionability come from the DESTINATION label, not the up/down
+      field. BUY/STRONG BUY -> UP (entry); CAUTION/AVOID/SELL -> DOWN (exit);
+      HOLD/NEUTRAL/unknown destination -> NON-actionable, dropped. So an
+      "upgrade/downgrade to NEUTRAL" (the YNVDA case) never becomes a trade, and
+      a BUY->HOLD is not a sell.
+  D2  magnitude is NOT inferred from the source. BUY conviction scales with the
+      composite score (round(score/10), clamped 0..10; no score -> 0, which is a
+      no-trade, never a fabricated default). Exits get a fixed -10 (confidence 1.0,
+      always clears the gate).
+
+  Items with NO destination label but an already-canonical change object (explicit
+  direction + explicit points_delta) are shape-normalized as-is — pure field
+  mapping, no inference.
+
+`coerce_payload` returns canonical JSON bytes. It never fabricates trade semantics:
+
+  * It never invents the irreducible fields — a payload missing both
     routine_id/run_id or any timestamp alias is left to fail (returns None).
   * An item that carries an EXPLICIT but unrecognized direction (e.g. "SIDEWAYS")
     is treated as a salvage failure, not silently reinterpreted.
@@ -34,23 +50,18 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # Explicit direction strings we accept and fold to the canonical enum. An explicit
 # direction NOT in this map is an error we refuse to guess around (see _coerce_change).
+# Note: this is only consulted for the no-label canonical-passthrough path — when a
+# destination label is present, D1 takes direction from the LABEL, not this field.
 _DIRECTION_ALIASES = {
     "UP": "UP", "UPGRADE": "UP",
     "DOWN": "DOWN", "DOWNGRADE": "DOWN",
 }
 
-# Higher = more bullish; used only to INFER a direction when none is provided.
-_SIGNAL_RANK = {
-    "STRONG BUY": 5, "BUY": 4, "HOLD": 3, "NEUTRAL": 2,
-    "CAUTION": 1, "AVOID": 0, "SELL": 0,
-}
-
-# Labels that justify an actionable default magnitude (>0.6 confidence gate) when
-# the source gave a direction but no numeric delta — mirrors the upstream builder,
-# which only made BUY/SELL-class transitions actionable. Neutral-ish transitions
-# get a sub-gate magnitude: accepted, but not auto-traded by the risk core.
-_BUYISH = {"BUY", "STRONG BUY"}
-_SELLISH = {"CAUTION", "AVOID", "SELL"}
+# D1 destination-label classes (mirrors routine_adapter._BUY_LABELS/_SELL_LABELS).
+# Anything else as a destination (HOLD/NEUTRAL/unknown) is non-actionable -> dropped.
+_BUY_LABELS = {"BUY", "STRONG BUY"}
+_SELL_LABELS = {"CAUTION", "AVOID", "SELL"}
+_EXIT_POINTS = -10  # D2: confidence 1.0 -> exits always clear min_confidence
 
 # Mirrors domain.OverlayType / schema.SignalChange.overlay; unknown overlays are
 # dropped (omitting is valid) rather than risking a validation failure.
@@ -77,22 +88,14 @@ def _label(*candidates: Any) -> Optional[str]:
     return None
 
 
-def _default_delta(direction: str, new_label: Optional[str]) -> int:
-    """Magnitude to use when the source gave a direction but no numeric delta."""
-    if new_label in _SELLISH:
-        return -10
-    if new_label in _BUYISH:
-        return 7
-    return 3 if direction == "UP" else -3  # below the 0.6 gate: accepted, not traded
-
-
 def _coerce_change(it: Any) -> Tuple[Optional[Dict[str, Any]], bool]:
-    """Map one raw change onto a canonical SignalChange dict.
+    """Map one raw change onto a canonical SignalChange dict per D1/D2.
 
-    Returns (change | None, was_candidate). was_candidate is True when the item
-    looked like a real directional change, so a None alongside it is a salvage
-    failure (the caller should reject) rather than a benign skip (e.g. an
-    explicitly-unchanged row)."""
+    Returns (change | None, was_candidate). was_candidate is True only when the
+    item was actionable but BROKEN (unsalvageable direction, missing ticker), so a
+    None alongside it is a salvage failure the caller should reject. A benign skip
+    — an unchanged row or a non-actionable HOLD/NEUTRAL destination — returns
+    (None, False)."""
     if not isinstance(it, dict):
         return None, False
 
@@ -103,53 +106,39 @@ def _coerce_change(it: Any) -> Tuple[Optional[Dict[str, Any]], bool]:
         # don't reinterpret it from other fields.
         return None, True
 
-    prior_label = _label(it.get("prior_signal"), it.get("prior"))
-    new_label = _label(it.get("new_signal"), it.get("signal"))
-    prior_score = _num(it.get("prior_score"))
-    new_score = _num(it.get("new_score"))
-    if new_score is None:
-        new_score = _num(it.get("score"))
-    explicit_delta = _num(it.get("points_delta"))
-    changed_flag = it.get("changed")
-
-    if changed_flag is False:
+    if it.get("changed") is False:
         return None, False  # source explicitly says "no change this sweep"
 
-    label_change = (prior_label is not None and new_label is not None
-                    and prior_label != new_label)
-    is_candidate = (explicit_dir is not None or changed_flag is True
-                    or explicit_delta is not None or label_change)
-    if not is_candidate:
-        return None, False
+    prior_label = _label(it.get("prior_signal"), it.get("prior"))
+    new_label = _label(it.get("new_signal"), it.get("signal"))
+    score = _num(it.get("new_score"))
+    if score is None:
+        score = _num(it.get("score"))
 
-    # direction: explicit > score-delta sign > label-rank sign > delta sign
-    direction = explicit_dir
-    if direction is None and prior_score is not None and new_score is not None:
-        diff = new_score - prior_score
-        direction = "UP" if diff > 0 else ("DOWN" if diff < 0 else None)
-    if direction is None and prior_label in _SIGNAL_RANK and new_label in _SIGNAL_RANK:
-        diff = _SIGNAL_RANK[new_label] - _SIGNAL_RANK[prior_label]
-        direction = "UP" if diff > 0 else ("DOWN" if diff < 0 else None)
-    if direction is None and explicit_delta not in (None, 0):
-        direction = "UP" if explicit_delta > 0 else "DOWN"
-    if direction not in ("UP", "DOWN"):
-        return None, True  # a candidate we could not resolve -> salvage failure
+    # D1/D2: the DESTINATION label decides direction, actionability, and magnitude.
+    if new_label in _BUY_LABELS:
+        direction = "UP"
+        delta = max(0, min(10, int(round((score or 0.0) / 10))))  # D2; no score -> 0
+    elif new_label in _SELL_LABELS:
+        direction = "DOWN"
+        delta = _EXIT_POINTS
+    elif new_label is not None:
+        # Explicit HOLD/NEUTRAL/other destination -> non-actionable, benign skip.
+        return None, False
+    else:
+        # No destination label: accept only an already-canonical change object
+        # (explicit direction + explicit points_delta). This is pure shape
+        # normalization — no inference of trade intent.
+        explicit_delta = _num(it.get("points_delta"))
+        if explicit_dir is None or explicit_delta is None:
+            return None, False
+        direction = explicit_dir
+        delta = int(round(explicit_delta))
 
     ticker = it.get("ticker") or it.get("symbol") or it.get("qualified_symbol")
     if not isinstance(ticker, str) or not ticker.strip():
         return None, True
     ticker = ticker.strip()
-
-    # points_delta: explicit > score delta > label-aware default. Never 0 (a 0 delta
-    # normalizes to 0 confidence, i.e. a silent no-trade we didn't intend here).
-    if explicit_delta is not None:
-        delta = int(round(explicit_delta))
-    elif prior_score is not None and new_score is not None:
-        delta = int(round(new_score - prior_score))
-    else:
-        delta = _default_delta(direction, new_label)
-    if delta == 0:
-        delta = 1 if direction == "UP" else -1
 
     transition = it.get("transition")
     if not (isinstance(transition, list) and len(transition) == 2):
