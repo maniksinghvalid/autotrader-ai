@@ -155,6 +155,7 @@ class TradeEngine:
         router. Legs are ordered long-before-short so a covered structure's hedge
         is never momentarily naked. O1 overlays are single-leg; multi-leg
         atomic-unwind on partial failure is O2."""
+        # lazy import: keeps the options subpackage optional (matches rebalance()/_flatten_all())
         from autotrader.options.planner import build_overlay_plan, OverlayPlan
 
         self._signal_seq += 1
@@ -166,6 +167,7 @@ class TradeEngine:
                         plan.overlay.value, plan.underlying, plan.reason)
             return TickResult(plan.reason, f"{plan.overlay.value}:{plan.underlying}")
 
+        # O1: overlays record signal+trade but not a performance snapshot (they adjust an existing position, not a standalone P&L event).
         if self._db:
             self._db.record_signal(
                 symbol=signal.symbol, direction=signal.direction,
