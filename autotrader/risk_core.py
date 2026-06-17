@@ -16,6 +16,10 @@ from autotrader.domain import AccountSnapshot, OrderRequest
 # Group 1 is "C" or "P".
 _OPT_SUFFIX = re.compile(r"^\d{6}([CP])\d+$")
 
+# Credit-leg sizing assumes a 200% stop-loss (buy-to-close at 3x entry) => max loss
+# is this multiple of the premium collected. The stop itself is enforced in O4.
+_CREDIT_STOP_LOSS_MULTIPLE = 2.0
+
 
 def _short_option_contracts(snapshot, underlying: str, right: str) -> int:
     """Total short contracts already open on `underlying` for the given right
@@ -134,8 +138,11 @@ def _evaluate_option_leg(req: OrderRequest, snapshot: AccountSnapshot,
     """O1 option gate. Env + stale already checked by the caller.
     - underlying must be allow-listed
     - contracts <= max_option_contracts (cap 0 => options off)
-    - a short OPEN leg must be share-covered (covered call) — never naked
-    - a long (debit) OPEN leg's premium outlay is capped per trade
+    - a short OPEN leg must be covered — by shares (CALLs only) or by a long option
+      leg in the same plan (`coverage_legs`, defined-risk) — never naked
+    - premium is capped by an NLV-derived budget (option_max_risk_pct): debit legs cap
+      paid premium, credit legs cap 2x collected (200% stop). max_option_premium_per_trade
+      is an optional absolute ceiling (0 = off); the tighter of the two binds.
     Gross-exposure aggregation and the daily premium cap are later phases."""
     opt = req.option
     underlying = opt.underlying.upper()
@@ -172,10 +179,11 @@ def _evaluate_option_leg(req: OrderRequest, snapshot: AccountSnapshot,
                 f"{existing_short} short {opt.right} contract(s) open)")
         # Credit-leg premium cap: with the 200% stop (buy-to-close at 3x entry) the max
         # loss is 2x premium collected. Entry-discipline; the stop is enforced in O4.
-        if 2.0 * gross > budget:
+        if _CREDIT_STOP_LOSS_MULTIPLE * gross > budget:
             return RiskDecision(
                 False,
-                f"short option premium risk {2.0 * gross:.2f} (2x collected {gross:.2f}) "
+                f"short option premium risk {_CREDIT_STOP_LOSS_MULTIPLE * gross:.2f} "
+                f"(2x collected {gross:.2f}) "
                 f"> budget {budget:.2f} (NLV {nlv:.2f} x {cfg.option_max_risk_pct})")
         if abs_ceiling > 0 and gross > abs_ceiling:
             return RiskDecision(False,
