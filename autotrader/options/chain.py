@@ -28,16 +28,18 @@ class OptionQuote:
 
 def select_contract(quotes: List[OptionQuote], right: OptionRight,
                     target_delta: float, dte_min: int, dte_max: int,
-                    asof: date) -> Optional[OptionQuote]:
+                    asof: date, pin_expiry: Optional[date] = None) -> Optional[OptionQuote]:
     """Closest-to-target-|delta| contract of `right` whose DTE is in
-    [dte_min, dte_max] and premium > 0. None if nothing qualifies.
-    Ties broken by nearest expiry, then lowest strike (deterministic
-    regardless of input order)."""
+    [dte_min, dte_max] and premium > 0. When `pin_expiry` is set, candidates are
+    further restricted to that exact expiry (used to keep multi-leg single-expiry
+    strategies on one expiry). None if nothing qualifies. Ties broken by nearest
+    expiry, then lowest strike (deterministic regardless of input order)."""
     target = abs(target_delta)
     candidates = [
         q for q in quotes
         if q.right == right and q.premium > 0
         and dte_min <= (q.expiry - asof).days <= dte_max
+        and (pin_expiry is None or q.expiry == pin_expiry)
     ]
     if not candidates:
         return None

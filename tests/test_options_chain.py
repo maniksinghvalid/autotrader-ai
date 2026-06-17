@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -206,3 +206,25 @@ def test_schema_and_normalize_accept_leap():
     )
     sig = normalize_payload(payload)[0]
     assert sig.overlay is OverlayType.LEAP
+
+
+def _two_expiry_calls():
+    a = date(2026, 6, 16)
+    near, far = a + timedelta(days=35), a + timedelta(days=300)
+    return [
+        OptionQuote("C-NEAR", "US.AAPL", near, 210, "CALL", 0.30, 1.5),
+        OptionQuote("C-FAR", "US.AAPL", far, 210, "CALL", 0.30, 20.0),
+    ]
+
+
+def test_select_contract_pin_expiry_filters_to_that_expiry():
+    a = date(2026, 6, 16)
+    near = a + timedelta(days=35)
+    q = select_contract(_two_expiry_calls(), "CALL", 0.30, 0, 400, a, pin_expiry=near)
+    assert q.code == "C-NEAR"
+
+
+def test_select_contract_pin_expiry_none_is_unchanged():
+    a = date(2026, 6, 16)
+    q = select_contract(_two_expiry_calls(), "CALL", 0.30, 0, 100, a)
+    assert q.code == "C-NEAR"  # only the near one is inside a 0..100 DTE window
