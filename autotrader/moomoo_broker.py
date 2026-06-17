@@ -98,7 +98,7 @@ class MoomooBroker(Broker):
         Vendored field names from get_option_chain.py: code, strike_price,
         strike_time, last_price. Snapshot greeks: option_delta, option_strike_price,
         option_expiry_date (alternatives kept as fallbacks)."""
-        from datetime import date as _date, datetime
+        from datetime import date as _date, datetime, timedelta
         from autotrader.options.chain import OptionQuote
         from moomoo import OptionType  # confined import
 
@@ -106,12 +106,6 @@ class MoomooBroker(Broker):
         # start/end are optional per vendored script; pass a 90-day window so we
         # get a useful range without flooding the response with far-dated expiries.
         today = _date.today()
-        end_str = (today.replace(year=today.year + 1)
-                   if today.month <= 3 else today.replace(month=today.month - 3,
-                                                           year=today.year + 1)
-                   ).strftime("%Y-%m-%d")
-        # Simpler: just pass start today, end ~90 days out.
-        from datetime import timedelta
         start_str = today.strftime("%Y-%m-%d")
         end_str = (today + timedelta(days=90)).strftime("%Y-%m-%d")
 
