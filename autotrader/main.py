@@ -191,6 +191,13 @@ class TradeEngine:
 
         last_boid = None
         filled_long = []  # symbols of long legs already filled this overlay
+
+        def _residual(failed_symbol: str, why: str) -> TickResult:
+            logger.warning("overlay %s left long-only residual %s after %s on %s",
+                           plan.correlation_id, filled_long, why, failed_symbol)
+            return TickResult("OVERLAY_RESIDUAL_LONG",
+                              f"{plan.correlation_id}:{','.join(filled_long)}")
+
         for leg in sorted(plan.legs, key=lambda l: 0 if l.request.side == "BUY" else 1):
             req = leg.request
             decision = evaluate(req, snap, self._cfg, ref_price=leg.quote.premium,
@@ -198,10 +205,7 @@ class TradeEngine:
             if not decision.approved:
                 logger.warning("overlay leg rejected (%s): %s", req.symbol, decision.reason)
                 if filled_long:
-                    logger.warning("overlay %s left long-only residual %s after reject: %s",
-                                   plan.correlation_id, filled_long, decision.reason)
-                    return TickResult("OVERLAY_RESIDUAL_LONG",
-                                      f"{plan.correlation_id}:{','.join(filled_long)}")
+                    return _residual(req.symbol, decision.reason)
                 return TickResult("REJECTED_BY_RISK", decision.reason)
             ack = self._router.submit(req)
             if self._db:
@@ -212,10 +216,7 @@ class TradeEngine:
                     state=ack.state.value)
             if ack.state in (OrderState.UNKNOWN, OrderState.REJECTED):
                 if filled_long:
-                    logger.warning("overlay %s left long-only residual %s after %s",
-                                   plan.correlation_id, filled_long, ack.state.value)
-                    return TickResult("OVERLAY_RESIDUAL_LONG",
-                                      f"{plan.correlation_id}:{','.join(filled_long)}")
+                    return _residual(req.symbol, ack.state.value)
                 action = "ORDER_UNKNOWN" if ack.state is OrderState.UNKNOWN else "ORDER_REJECTED"
                 return TickResult(action, ack.client_order_id)
             if (req.side == "BUY" and req.position_effect == "OPEN"
