@@ -97,3 +97,29 @@ def test_equity_signal_unaffected(tmp_path):
     eng = _engine(b, _cfg(), tmp_path)
     res = eng.submit_external_signal(Signal("US.AAPL", "BUY", 0.7, "plain"))
     assert res.action == "ORDER_PLACED", res
+
+
+# ---------------------------------------------------------------------------
+# I1b — overlay OPEN legs blocked when entry gate is closed
+# ---------------------------------------------------------------------------
+
+class _ClosedGate:
+    """Minimal stub: gate is closed (entries_enabled=False) and not halted."""
+    entries_enabled = False
+    halted = False
+
+
+def test_covered_call_blocked_when_entry_gate_closed(tmp_path):
+    """A covered-call OPEN signal is blocked when the entry window is closed,
+    even though shares are held — mirroring the BUY-entry gate for equity."""
+    b = _broker(shares=200)
+    strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=1.0,
+                                             stop_loss_pct=0.05, take_profit_pct=0.10,
+                                             confidence=0.7))
+    eng = TradeEngine(b, strat, _cfg(), order_qty=10,
+                      audit_path=str(tmp_path / "audit.jsonl"),
+                      today_fn=lambda: ASOF,
+                      entry_gate=_ClosedGate())
+    res = eng.submit_external_signal(
+        Signal("US.AAPL", "SELL", 0.7, "Covered Call", overlay=OverlayType.COVERED_CALL))
+    assert res.action == "ENTRY_CLOSED", res

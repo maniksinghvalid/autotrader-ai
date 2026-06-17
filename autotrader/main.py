@@ -175,6 +175,14 @@ class TradeEngine:
                 rationale=f"{plan.overlay.value}: {signal.rationale}",
                 signal_id=signal_id)
 
+        # Entry-window gate: block OPEN overlay legs when entries are closed.
+        # Mirrors the BUY-entry gate in _route_signal. CLOSE legs (buy-to-close,
+        # sell-to-close) are exits and must never be gated — only reject if the
+        # plan contains at least one OPEN leg.
+        if (self._gate is not None and not self._gate.entries_enabled
+                and any(l.request.position_effect == "OPEN" for l in plan.legs)):
+            return TickResult("ENTRY_CLOSED", f"{plan.overlay.value}:{plan.underlying}")
+
         last_boid = None
         for leg in sorted(plan.legs, key=lambda l: 0 if l.request.side == "BUY" else 1):
             req = leg.request

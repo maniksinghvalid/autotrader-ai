@@ -4,11 +4,32 @@ reach place_order except through an approved decision here (research §4.3)."""
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from typing import Optional
 
 from autotrader.config import RiskConfig
 from autotrader.domain import AccountSnapshot, OrderRequest
+
+# Matches the suffix of a moomoo option code after the underlying prefix:
+# e.g. for "US.AAPL260717C210000" after stripping "US.AAPL" → "260717C210000"
+# Group 1 is "C" or "P".
+_OPT_SUFFIX = re.compile(r"^\d{6}([CP])\d+$")
+
+
+def _short_option_contracts(snapshot, underlying: str, right: str) -> int:
+    """Total short contracts already open on `underlying` for the given right
+    (CALL/PUT), parsed from moomoo option codes (e.g. US.AAPL260717C210000).
+    Used to ensure stacked covered calls never become an aggregate naked short."""
+    want = "C" if right == "CALL" else "P"
+    total = 0
+    for p in snapshot.positions:
+        if p.qty >= 0 or not p.symbol.startswith(underlying):
+            continue
+        m = _OPT_SUFFIX.match(p.symbol[len(underlying):])
+        if m and m.group(1) == want:
+            total += -p.qty
+    return total
 
 
 @dataclass(frozen=True)
@@ -108,9 +129,13 @@ def _evaluate_option_leg(req: OrderRequest, snapshot: AccountSnapshot,
     if req.side == "SELL" and req.position_effect == "OPEN":
         need = req.qty * opt.multiplier
         held = snapshot.position_qty(underlying)
-        if held < need:
-            return RiskDecision(False,
-                                f"uncovered short: held {held} < required {need} shares")
+        existing_short = _short_option_contracts(snapshot, underlying, opt.right)
+        available = held - existing_short * opt.multiplier
+        if available < need:
+            return RiskDecision(
+                False,
+                f"uncovered short: available {available} < required {need} shares "
+                f"(held {held}, {existing_short} short {opt.right} contract(s) open)")
     else:
         # O1 only OPENs (covered-call SELL OPEN, protective-put BUY OPEN). This debit-cost
         # cap assumes a debit. CLOSE legs (buy-to-close / sell-to-close credits) need
@@ -120,5 +145,11 @@ def _evaluate_option_leg(req: OrderRequest, snapshot: AccountSnapshot,
             return RiskDecision(False,
                                 f"option premium {cost:.2f} > cap "
                                 f"{cfg.max_option_premium_per_trade}")
+
+    # Daily-loss guard for risk-increasing OPEN legs: mirrors the equity BUY-entry
+    # halt so a covered-call or protective-put OPEN is blocked when the day is
+    # already in a loss-limit breach. CLOSE legs are exits and are never gated here.
+    if req.position_effect == "OPEN" and snapshot.day_pnl <= -abs(cfg.daily_loss_limit):
+        return RiskDecision(False, f"daily loss limit breached: pnl={snapshot.day_pnl}")
 
     return RiskDecision(True, "OK")

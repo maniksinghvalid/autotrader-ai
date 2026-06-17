@@ -117,3 +117,38 @@ def test_option_config_rejects_inverted_dte_window(monkeypatch):
     monkeypatch.setenv("RISK_OPTION_DTE_MAX", "45")
     with pytest.raises(ValueError):
         load_risk_config()
+
+
+# ---------------------------------------------------------------------------
+# C1 — stacked short coverage: existing short contracts must consume coverage
+# ---------------------------------------------------------------------------
+
+def test_short_call_rejected_when_existing_shorts_consume_coverage():
+    # 200 shares already cover 2 short calls; a 3rd contract would be naked.
+    snap = AccountSnapshot(
+        cash=50000, total_assets=70000, day_pnl=0.0, stale=False,
+        positions=(Position("US.AAPL", 200, 200.0),
+                   Position("US.AAPL260717C210000", -2, 1.5)))  # 2 short calls already
+    d = evaluate(_call(qty=1), snap, _cfg(), ref_price=1.5)
+    assert not d.approved and "uncovered" in d.reason.lower()
+
+
+def test_short_call_approved_when_coverage_remains():
+    # 300 shares, 2 short calls already (cover 200) -> 100 shares free covers 1 more.
+    snap = AccountSnapshot(
+        cash=50000, total_assets=70000, day_pnl=0.0, stale=False,
+        positions=(Position("US.AAPL", 300, 200.0),
+                   Position("US.AAPL260717C210000", -2, 1.5)))
+    d = evaluate(_call(qty=1), snap, _cfg(), ref_price=1.5)
+    assert d.approved, d.reason
+
+
+# ---------------------------------------------------------------------------
+# I1a — daily-loss limit blocks option OPEN legs
+# ---------------------------------------------------------------------------
+
+def test_option_open_blocked_on_daily_loss_breach():
+    snap = AccountSnapshot(cash=50000, total_assets=70000, day_pnl=-600.0,
+                           stale=False, positions=(Position("US.AAPL", 200, 200.0),))
+    d = evaluate(_call(qty=1), snap, _cfg(daily_loss_limit=500), ref_price=1.5)
+    assert not d.approved and "daily loss" in d.reason.lower()
