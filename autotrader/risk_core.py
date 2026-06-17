@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 from autotrader.config import RiskConfig
 from autotrader.domain import AccountSnapshot, OrderRequest
@@ -32,6 +32,28 @@ def _short_option_contracts(snapshot, underlying: str, right: str) -> int:
     return total
 
 
+def _long_cover_contracts(coverage_legs, opt) -> int:
+    """Contracts of long OPEN option legs (in the same plan) that bound the risk
+    of a short leg of `opt`'s right on the same underlying (defined-risk coverage):
+      short CALL  <- long CALL with strike <= short strike AND expiry >= short expiry
+      short PUT   <- long PUT  with strike >= short strike AND expiry >= short expiry
+    """
+    total = 0
+    for c in coverage_legs:
+        co = c.option
+        if co is None or c.side != "BUY" or c.position_effect != "OPEN":
+            continue
+        if co.underlying.upper() != opt.underlying.upper() or co.right != opt.right:
+            continue
+        if opt.right == "CALL":
+            ok = co.strike <= opt.strike and co.expiry >= opt.expiry
+        else:  # PUT
+            ok = co.strike >= opt.strike and co.expiry >= opt.expiry
+        if ok:
+            total += c.qty
+    return total
+
+
 @dataclass(frozen=True)
 class RiskDecision:
     approved: bool
@@ -44,7 +66,8 @@ def _notional(req: OrderRequest, ref_price: float) -> float:
 
 
 def evaluate(req: OrderRequest, snapshot: AccountSnapshot, cfg: RiskConfig,
-             ref_price: Optional[float]) -> RiskDecision:
+             ref_price: Optional[float],
+             coverage_legs: Tuple[OrderRequest, ...] = ()) -> RiskDecision:
     sym = req.symbol.upper()
 
     # Universal guards — apply to every order (equity and option) regardless of
@@ -61,7 +84,7 @@ def evaluate(req: OrderRequest, snapshot: AccountSnapshot, cfg: RiskConfig,
     # equity long-only / notional / exposure caps below do not apply leg-by-leg.
     # Placed before the equity reduce-only setup so that setup stays equity-only.
     if req.option is not None:
-        return _evaluate_option_leg(req, snapshot, cfg, ref_price)
+        return _evaluate_option_leg(req, snapshot, cfg, ref_price, coverage_legs)
 
     # Reduce-only exit: a SELL that strictly lowers an existing long position can
     # never INCREASE risk, so the risk-increasing caps (daily-loss halt, order
@@ -106,7 +129,8 @@ def evaluate(req: OrderRequest, snapshot: AccountSnapshot, cfg: RiskConfig,
 
 
 def _evaluate_option_leg(req: OrderRequest, snapshot: AccountSnapshot,
-                         cfg: RiskConfig, ref_price: Optional[float]) -> RiskDecision:
+                         cfg: RiskConfig, ref_price: Optional[float],
+                         coverage_legs: Tuple[OrderRequest, ...] = ()) -> RiskDecision:
     """O1 option gate. Env + stale already checked by the caller.
     - underlying must be allow-listed
     - contracts <= max_option_contracts (cap 0 => options off)
@@ -126,25 +150,46 @@ def _evaluate_option_leg(req: OrderRequest, snapshot: AccountSnapshot,
         return RiskDecision(False,
                             f"contracts {req.qty} > cap {cfg.max_option_contracts}")
 
+    nlv = snapshot.total_assets
+    budget = nlv * cfg.option_max_risk_pct          # max acceptable loss for this leg
+    abs_ceiling = cfg.max_option_premium_per_trade  # optional absolute $ ceiling; 0 = off
+    gross = req.qty * premium * opt.multiplier      # premium dollars (paid or collected)
+
     if req.side == "SELL" and req.position_effect == "OPEN":
-        need = req.qty * opt.multiplier
-        held = snapshot.position_qty(underlying)
+        # Defined-risk coverage: shares (CALLs only) or a long leg in the same plan.
+        # Shares never cover a short PUT — only a long put bounds it.
+        need = req.qty  # contracts
         existing_short = _short_option_contracts(snapshot, underlying, opt.right)
-        available = held - existing_short * opt.multiplier
+        share_cover = (snapshot.position_qty(underlying) // opt.multiplier
+                       if opt.right == "CALL" else 0)
+        long_cover = _long_cover_contracts(coverage_legs, opt)
+        available = share_cover + long_cover - existing_short
         if available < need:
             return RiskDecision(
                 False,
-                f"uncovered short: available {available} < required {need} shares "
-                f"(held {held}, {existing_short} short {opt.right} contract(s) open)")
-    else:
-        # O1 only OPENs (covered-call SELL OPEN, protective-put BUY OPEN). This debit-cost
-        # cap assumes a debit. CLOSE legs (buy-to-close / sell-to-close credits) need
-        # explicit handling in O4 — do not assume this formula is correct for CLOSE.
-        cost = req.qty * premium * opt.multiplier
-        if not math.isfinite(cost) or cost > cfg.max_option_premium_per_trade:
+                f"uncovered short: covered {available} < required {need} contract(s) "
+                f"(shares cover {share_cover}, long-leg cover {long_cover}, "
+                f"{existing_short} short {opt.right} contract(s) open)")
+        # Credit-leg premium cap: with the 200% stop (buy-to-close at 3x entry) the max
+        # loss is 2x premium collected. Entry-discipline; the stop is enforced in O4.
+        if 2.0 * gross > budget:
+            return RiskDecision(
+                False,
+                f"short option premium risk {2.0 * gross:.2f} (2x collected {gross:.2f}) "
+                f"> budget {budget:.2f} (NLV {nlv:.2f} x {cfg.option_max_risk_pct})")
+        if abs_ceiling > 0 and gross > abs_ceiling:
             return RiskDecision(False,
-                                f"option premium {cost:.2f} > cap "
-                                f"{cfg.max_option_premium_per_trade}")
+                                f"option premium {gross:.2f} > absolute cap {abs_ceiling}")
+    else:
+        # Debit (long) OPEN: max loss = 100% of premium paid.
+        if not math.isfinite(gross) or gross > budget:
+            return RiskDecision(
+                False,
+                f"option premium debit {gross:.2f} > budget {budget:.2f} "
+                f"(NLV {nlv:.2f} x {cfg.option_max_risk_pct})")
+        if abs_ceiling > 0 and gross > abs_ceiling:
+            return RiskDecision(False,
+                                f"option premium {gross:.2f} > absolute cap {abs_ceiling}")
 
     # Daily-loss guard for risk-increasing OPEN legs: mirrors the equity BUY-entry
     # halt so a covered-call or protective-put OPEN is blocked when the day is

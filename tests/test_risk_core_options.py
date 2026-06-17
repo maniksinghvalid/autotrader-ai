@@ -182,3 +182,101 @@ def test_option_max_risk_pct_parses_env(monkeypatch):
     monkeypatch.setenv("RISK_OPTION_MAX_RISK_PCT", "0.01")
     cfg = load_risk_config()
     assert cfg.option_max_risk_pct == 0.01
+
+
+# ---------------------------------------------------------------------------
+# Task 7 — defined-risk coverage (long leg covers short leg) + NLV premium caps
+# ---------------------------------------------------------------------------
+
+def _long_put(strike=200, expiry=date(2026, 7, 17), qty=1):
+    c = OptionContract(underlying="US.AAPL", expiry=expiry, strike=strike,
+                       right="PUT", code=f"US.AAPL260717P{int(strike)*1000:06d}")
+    return OrderRequest(symbol=c.code, side="BUY", qty=qty, order_type="MARKET",
+                        limit_price=None, client_order_id="long-p", option=c,
+                        position_effect="OPEN", correlation_id="k")
+
+
+def _short_put(strike=185, expiry=date(2026, 7, 17), qty=1):
+    c = OptionContract(underlying="US.AAPL", expiry=expiry, strike=strike,
+                       right="PUT", code=f"US.AAPL260717P{int(strike)*1000:06d}")
+    return OrderRequest(symbol=c.code, side="SELL", qty=qty, order_type="MARKET",
+                        limit_price=None, client_order_id="short-p", option=c,
+                        position_effect="OPEN", correlation_id="k")
+
+
+def _long_call(strike=180, expiry=date(2027, 4, 17), qty=1):
+    c = OptionContract(underlying="US.AAPL", expiry=expiry, strike=strike,
+                       right="CALL", code=f"US.AAPL270417C{int(strike)*1000:06d}")
+    return OrderRequest(symbol=c.code, side="BUY", qty=qty, order_type="MARKET",
+                        limit_price=None, client_order_id="long-c", option=c,
+                        position_effect="OPEN", correlation_id="k")
+
+
+def test_short_put_covered_by_long_put_approved():
+    d = evaluate(_short_put(strike=185, qty=1), _snap(aapl_shares=0), _cfg(),
+                 ref_price=1.5, coverage_legs=(_long_put(strike=200, qty=1),))
+    assert d.approved, d.reason
+
+
+def test_short_put_without_long_cover_rejected():
+    d = evaluate(_short_put(strike=185, qty=1), _snap(aapl_shares=100), _cfg(),
+                 ref_price=1.5)   # shares never cover a short put
+    assert not d.approved and "uncovered" in d.reason.lower()
+
+
+def test_short_call_covered_by_long_call_diagonal_approved():
+    sc = OrderRequest(symbol="US.AAPL260717C210000", side="SELL", qty=1,
+                      order_type="MARKET", limit_price=None, client_order_id="sc",
+                      option=OptionContract(underlying="US.AAPL", expiry=date(2026, 7, 17),
+                                            strike=210, right="CALL",
+                                            code="US.AAPL260717C210000"),
+                      position_effect="OPEN", correlation_id="k")
+    d = evaluate(sc, _snap(aapl_shares=0), _cfg(), ref_price=1.5,
+                 coverage_legs=(_long_call(strike=180, qty=1),))
+    assert d.approved, d.reason
+
+
+def test_long_call_cover_insufficient_when_strike_higher_than_short():
+    sc = OrderRequest(symbol="US.AAPL260717C210000", side="SELL", qty=1,
+                      order_type="MARKET", limit_price=None, client_order_id="sc",
+                      option=OptionContract(underlying="US.AAPL", expiry=date(2026, 7, 17),
+                                            strike=210, right="CALL",
+                                            code="US.AAPL260717C210000"),
+                      position_effect="OPEN", correlation_id="k")
+    d = evaluate(sc, _snap(aapl_shares=0), _cfg(), ref_price=1.5,
+                 coverage_legs=(_long_call(strike=220, qty=1),))
+    assert not d.approved and "uncovered" in d.reason.lower()
+
+
+def test_collar_short_call_still_share_covered():
+    d = evaluate(_call(qty=1), _snap(aapl_shares=100), _cfg(), ref_price=1.5)
+    assert d.approved, d.reason
+
+
+# --- NLV-derived premium caps (option_max_risk_pct) -------------------------
+# _snap() NLV (total_assets) is 70000 -> budget = 70000 * 0.02 = 1400.
+
+def test_debit_leg_rejected_by_nlv_budget():
+    d = evaluate(_put(qty=1), _snap(),
+                 _cfg(max_option_premium_per_trade=0.0, option_max_risk_pct=0.02),
+                 ref_price=20.0)
+    assert not d.approved and "budget" in d.reason.lower()
+
+
+def test_credit_leg_rejected_by_double_premium_rule():
+    d = evaluate(_call(qty=1), _snap(aapl_shares=100),
+                 _cfg(max_option_premium_per_trade=0.0, option_max_risk_pct=0.02),
+                 ref_price=10.0)
+    assert not d.approved and "2x" in d.reason.lower()
+
+
+def test_credit_leg_within_budget_approved():
+    d = evaluate(_call(qty=1), _snap(aapl_shares=100),
+                 _cfg(max_option_premium_per_trade=0.0), ref_price=5.0)
+    assert d.approved, d.reason
+
+
+def test_absolute_ceiling_binds_when_tighter_than_budget():
+    d = evaluate(_put(qty=1), _snap(), _cfg(max_option_premium_per_trade=300.0),
+                 ref_price=4.0)
+    assert not d.approved and "absolute cap" in d.reason.lower()
