@@ -167,7 +167,7 @@ def _rich_broker():
 
 
 def _cfgN(**over):
-    # all four phantom overlays enabled; premium cap high enough for LEAP/PMCC long legs
+    # max_option_premium_per_trade is unused by the planner (risk_core enforces it); set for parity with the e2e config
     base = dict(allowed_overlays=frozenset({
         "COVERED_CALL", "PROTECTIVE_PUT", "COLLAR",
         "BEAR_PUT_SPREAD", "CALL_DIAGONAL", "LEAP"}),

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 
 from autotrader.config import RiskConfig
 from autotrader.domain import AccountSnapshot, OrderRequest, OverlayType, Signal
@@ -38,7 +38,7 @@ class OverlaySkip:
                   # | SKIP_NO_UNDERLYING | SKIP_NO_CONTRACT | SKIP_INVALID_STRUCTURE
 
 
-def _validate_structure(overlay: OverlayType, legs) -> Union[str, None]:
+def _validate_structure(overlay: OverlayType, legs: Tuple["OverlayLeg", ...]) -> Optional[str]:
     """Defined-risk sanity check after contracts are selected. Returns a skip
     reason string or None. Defends the coverage guarantee the risk core relies on."""
     longs = [l for l in legs if l.request.side == "BUY"]
