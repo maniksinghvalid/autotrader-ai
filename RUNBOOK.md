@@ -75,6 +75,13 @@ export FUTU_ACC_ID=<your SIMULATE acc_id>
 | `RISK_DAILY_LOSS_LIMIT` | `500` | Halt trading when `day_pnl <= -limit`. |
 | `RISK_MAX_GROSS_EXPOSURE` | `50000` | Gross exposure cap after an order. |
 | `RISK_TRAILING_STOP_PCT` | `0.0` | Broker-resting trailing-stop % on each BUY entry. `0` disables; `5.0` = 5% (see §7). |
+| `RISK_ALLOWED_OVERLAYS` | *(empty → options off)* | **DEFAULT OFF.** Comma list of enabled overlays, e.g. `COVERED_CALL,PROTECTIVE_PUT`. Requires human review before enabling. See `config/risk.config.example`. |
+| `RISK_MAX_OPTION_CONTRACTS` | `0` | Per-leg contract cap. `0` = options fully disabled. |
+| `RISK_MAX_OPTION_PREMIUM_PER_TRADE` | `0` | Max debit ($) per long option leg. |
+| `RISK_OPTION_TARGET_DELTA` | `0.30` | Delta target for contract selection. |
+| `RISK_OPTION_DTE_MIN` / `RISK_OPTION_DTE_MAX` | `30` / `45` | DTE window for contract selection. |
+| `RISK_OPTION_DTE_TO_CLOSE` | `7` | DTE at which an exit is declared (enforced in O4). |
+| `RISK_OPTION_PROFIT_TARGET_PCT` | `0.5` | Profit-target fraction for exit (enforced in O4). |
 
 **OpenD connection (`FUTU_*`)** — read by the vendored `common.py`:
 

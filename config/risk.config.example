@@ -50,3 +50,16 @@ RISK_TARGET_STALENESS_HOURS=24        # skip rebalance if the target snapshot is
 # Hard daily-loss flatten+halt. MUST exceed the soft RISK_DAILY_LOSS_LIMIT (which
 # only closes the entry gate). Breach when day_pnl <= -value.
 RISK_DAILY_LOSS_HALT=1000
+
+# --- Options overlays (DEFAULT OFF; HUMAN-REVIEW values) ---
+# Leave RISK_ALLOWED_OVERLAYS empty and RISK_MAX_OPTION_CONTRACTS=0 to keep options
+# disabled (the defaults). Enable only after explicit human review of each limit.
+# Risk-limit CHANGES require explicit human review (CLAUDE.md).
+RISK_ALLOWED_OVERLAYS=                 # e.g. COVERED_CALL,PROTECTIVE_PUT
+RISK_MAX_OPTION_CONTRACTS=0            # per-leg contract cap (0 = options off)
+RISK_MAX_OPTION_PREMIUM_PER_TRADE=0    # max debit ($) per long leg
+RISK_OPTION_TARGET_DELTA=0.30          # contract-selection delta target
+RISK_OPTION_DTE_MIN=30
+RISK_OPTION_DTE_MAX=45
+RISK_OPTION_DTE_TO_CLOSE=7             # exit declaration (enforced in O4)
+RISK_OPTION_PROFIT_TARGET_PCT=0.5      # exit declaration (enforced in O4)
