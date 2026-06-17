@@ -22,7 +22,7 @@ class SignalChange(BaseModel):
     # pydantic-only; normalize.py converts the string to the enum.
     overlay: Optional[Literal[
         "COVERED_CALL", "PROTECTIVE_PUT", "COLLAR",
-        "CALL_DIAGONAL", "BEAR_PUT_SPREAD",
+        "CALL_DIAGONAL", "BEAR_PUT_SPREAD", "LEAP",
     ]] = None
 
 

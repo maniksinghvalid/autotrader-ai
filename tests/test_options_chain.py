@@ -193,3 +193,16 @@ def test_optionquote_rejects_bad_right():
     with pytest.raises(ValueError):
         OptionQuote(code="X", underlying="US.AAPL", expiry=date(2026, 7, 17),
                     strike=200, right="STRADDLE", delta=0.30, premium=1.0)
+
+
+def test_schema_and_normalize_accept_leap():
+    payload = RoutineSignalPayload(
+        routine_id="r1",
+        timestamp="2026-06-16T00:00:00Z",
+        signal_changes=[{
+            "ticker": "US.AAPL", "direction": "UP", "points_delta": 1,
+            "overlay": "LEAP",
+        }],
+    )
+    sig = normalize_payload(payload)[0]
+    assert sig.overlay is OverlayType.LEAP

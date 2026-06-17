@@ -43,3 +43,7 @@ def test_legspec_rejects_bad_side():
     import pytest
     with pytest.raises(ValueError):
         LegSpec(right="CALL", side="sell")
+
+
+def test_leap_enum_value_exists():
+    assert OverlayType.LEAP.value == "LEAP"

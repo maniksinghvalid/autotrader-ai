@@ -24,6 +24,7 @@ class OverlayType(enum.Enum):
     COLLAR = "COLLAR"
     CALL_DIAGONAL = "CALL_DIAGONAL"
     BEAR_PUT_SPREAD = "BEAR_PUT_SPREAD"
+    LEAP = "LEAP"
 
 
 @dataclass(frozen=True)
