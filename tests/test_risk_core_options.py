@@ -152,3 +152,33 @@ def test_option_open_blocked_on_daily_loss_breach():
                            stale=False, positions=(Position("US.AAPL", 200, 200.0),))
     d = evaluate(_call(qty=1), snap, _cfg(daily_loss_limit=500), ref_price=1.5)
     assert not d.approved and "daily loss" in d.reason.lower()
+
+
+# ---------------------------------------------------------------------------
+# Task 5 — option_default_contracts + option_max_risk_pct config fields
+# ---------------------------------------------------------------------------
+
+def test_option_default_contracts_defaults_to_one(monkeypatch):
+    monkeypatch.setenv("RISK_ALLOWED_SYMBOLS", "US.AAPL")
+    cfg = load_risk_config()
+    assert cfg.option_default_contracts == 1
+
+
+def test_option_default_contracts_parses_env(monkeypatch):
+    monkeypatch.setenv("RISK_ALLOWED_SYMBOLS", "US.AAPL")
+    monkeypatch.setenv("RISK_OPTION_DEFAULT_CONTRACTS", "3")
+    cfg = load_risk_config()
+    assert cfg.option_default_contracts == 3
+
+
+def test_option_max_risk_pct_defaults_to_two_percent(monkeypatch):
+    monkeypatch.setenv("RISK_ALLOWED_SYMBOLS", "US.AAPL")
+    cfg = load_risk_config()
+    assert cfg.option_max_risk_pct == 0.02
+
+
+def test_option_max_risk_pct_parses_env(monkeypatch):
+    monkeypatch.setenv("RISK_ALLOWED_SYMBOLS", "US.AAPL")
+    monkeypatch.setenv("RISK_OPTION_MAX_RISK_PCT", "0.01")
+    cfg = load_risk_config()
+    assert cfg.option_max_risk_pct == 0.01

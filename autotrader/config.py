@@ -46,6 +46,14 @@ class RiskConfig:
     option_dte_max: int = 45
     option_dte_to_close: int = 7        # exit declaration (enforced O4)
     option_profit_target_pct: float = 0.5
+    # Contract count for strategies that are NOT share-covered (spread / diagonal /
+    # LEAP). Share-covered overlays (covered call, collar) still size off held shares.
+    option_default_contracts: int = 1
+    # Fraction of NLV (snapshot.total_assets) at risk per option leg. Drives the
+    # premium cap: debit legs cap paid premium at NLV*pct; credit legs cap collected
+    # premium at NLV*pct/2 (200% stop => max loss 2x premium). max_option_premium_per_trade
+    # remains an OPTIONAL absolute dollar ceiling (0 = off); the tighter of the two binds.
+    option_max_risk_pct: float = 0.02
 
 
 def _f(name: str, default: float) -> float:
@@ -106,4 +114,6 @@ def load_risk_config() -> RiskConfig:
         option_dte_max=option_dte_max,
         option_dte_to_close=int(_f("RISK_OPTION_DTE_TO_CLOSE", 7)),
         option_profit_target_pct=_f("RISK_OPTION_PROFIT_TARGET_PCT", 0.5),
+        option_default_contracts=int(_f("RISK_OPTION_DEFAULT_CONTRACTS", 1)),
+        option_max_risk_pct=_f("RISK_OPTION_MAX_RISK_PCT", 0.02),
     )
