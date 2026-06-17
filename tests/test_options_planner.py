@@ -113,7 +113,9 @@ def test_skip_overlay_disabled():
     assert isinstance(skip, OverlaySkip) and skip.reason == "SKIP_OVERLAY_DISABLED"
 
 
-def test_skip_unsupported_overlay():
+def test_skip_unsupported_overlay(monkeypatch):
+    from autotrader.options import overlays
+    monkeypatch.delitem(overlays.REGISTRY, OverlayType.COLLAR)
     skip = build_overlay_plan(_sig(OverlayType.COLLAR), _snap(100),
                               _broker(), _cfg(allowed_overlays=frozenset({"COLLAR"})),
                               "s", _asof())
@@ -138,3 +140,106 @@ def test_build_overlay_plan_requires_overlay():
     sig = Signal(symbol="US.AAPL", direction="BUY", confidence=0.7, rationale="x")  # no overlay
     with pytest.raises(ValueError):
         build_overlay_plan(sig, _snap(100), _broker(), _cfg(), "s", _asof())
+
+
+def _far():
+    return _asof() + timedelta(days=300)
+
+
+def _rich_chains():
+    a, near, far = _asof(), _asof() + timedelta(days=35), _far()
+    return {
+        ("US.AAPL", "CALL"): [
+            OptionQuote("US.AAPL270412C180000", "US.AAPL", far, 180, "CALL", 0.80, 30.0),
+            OptionQuote("US.AAPL270412C195000", "US.AAPL", far, 195, "CALL", 0.70, 20.0),
+            OptionQuote("US.AAPL260721C210000", "US.AAPL", near, 210, "CALL", 0.30, 1.5),
+        ],
+        ("US.AAPL", "PUT"): [
+            OptionQuote("US.AAPL260721P200000", "US.AAPL", near, 200, "PUT", -0.45, 4.0),
+            OptionQuote("US.AAPL260721P190000", "US.AAPL", near, 190, "PUT", -0.30, 2.0),
+            OptionQuote("US.AAPL260721P185000", "US.AAPL", near, 185, "PUT", -0.22, 1.5),
+        ],
+    }
+
+
+def _rich_broker():
+    return SimBroker(quotes={"US.AAPL": 200.0}, option_chains=_rich_chains())
+
+
+def _cfgN(**over):
+    # all four phantom overlays enabled; premium cap high enough for LEAP/PMCC long legs
+    base = dict(allowed_overlays=frozenset({
+        "COVERED_CALL", "PROTECTIVE_PUT", "COLLAR",
+        "BEAR_PUT_SPREAD", "CALL_DIAGONAL", "LEAP"}),
+        max_option_premium_per_trade=5000.0, option_default_contracts=1)
+    base.update(over)
+    return _cfg(**base)
+
+
+def test_collar_plan_is_long_put_and_short_call_same_expiry():
+    plan = build_overlay_plan(_sig(OverlayType.COLLAR), _snap(100),
+                              _rich_broker(), _cfgN(), "s", _asof())
+    assert isinstance(plan, OverlayPlan)
+    by_side = {l.request.side: l for l in plan.legs}
+    assert by_side["BUY"].request.option.right == "PUT"
+    assert by_side["SELL"].request.option.right == "CALL"
+    assert by_side["BUY"].request.option.expiry == by_side["SELL"].request.option.expiry
+    assert by_side["BUY"].request.option.code == "US.AAPL260721P190000"  # 0.30 put
+    assert by_side["SELL"].request.option.code == "US.AAPL260721C210000"  # 0.30 call
+
+
+def test_bear_put_spread_plan_long_higher_short_lower_same_expiry():
+    plan = build_overlay_plan(_sig(OverlayType.BEAR_PUT_SPREAD), _snap(0),
+                              _rich_broker(), _cfgN(), "s", _asof())
+    assert isinstance(plan, OverlayPlan)
+    by_side = {l.request.side: l for l in plan.legs}
+    assert by_side["BUY"].request.option.strike == 200   # 0.45 delta long
+    assert by_side["SELL"].request.option.strike == 185  # 0.22 (closest to 0.25) short
+    assert by_side["BUY"].request.qty == 1               # option_default_contracts
+    assert by_side["BUY"].request.option.expiry == by_side["SELL"].request.option.expiry
+
+
+def test_call_diagonal_plan_long_far_short_near_different_expiries():
+    plan = build_overlay_plan(_sig(OverlayType.CALL_DIAGONAL), _snap(0),
+                              _rich_broker(), _cfgN(), "s", _asof())
+    assert isinstance(plan, OverlayPlan)
+    by_side = {l.request.side: l for l in plan.legs}
+    assert by_side["BUY"].request.option.strike == 180          # deep-ITM 0.80
+    assert by_side["BUY"].request.option.expiry == _far()
+    assert by_side["SELL"].request.option.strike == 210         # near 0.30
+    assert by_side["BUY"].request.option.expiry > by_side["SELL"].request.option.expiry
+
+
+def test_leap_plan_single_long_call_sized_by_default_contracts():
+    plan = build_overlay_plan(_sig(OverlayType.LEAP), _snap(0),
+                              _rich_broker(), _cfgN(option_default_contracts=2), "s", _asof())
+    assert isinstance(plan, OverlayPlan)
+    assert len(plan.legs) == 1
+    leg = plan.legs[0].request
+    assert leg.side == "BUY" and leg.option.right == "CALL"
+    assert leg.option.code == "US.AAPL270412C195000" and leg.qty == 2
+
+
+def test_non_covered_strategy_sized_zero_is_disabled():
+    skip = build_overlay_plan(_sig(OverlayType.LEAP), _snap(0), _rich_broker(),
+                              _cfgN(option_default_contracts=0), "s", _asof())
+    assert isinstance(skip, OverlaySkip) and skip.reason == "SKIP_OVERLAY_DISABLED"
+
+
+def test_bear_put_spread_invalid_structure_when_no_debit():
+    # A chain where the two selected puts invert the debit (long premium < short).
+    a, near = _asof(), _asof() + timedelta(days=35)
+    bad = {("US.AAPL", "PUT"): [
+        OptionQuote("LONG", "US.AAPL", near, 200, "PUT", -0.45, 1.0),   # long, cheap
+        OptionQuote("SHORT", "US.AAPL", near, 185, "PUT", -0.25, 4.0),  # short, rich
+    ]}
+    b = SimBroker(quotes={"US.AAPL": 200.0}, option_chains=bad)
+    skip = build_overlay_plan(_sig(OverlayType.BEAR_PUT_SPREAD), _snap(0), b,
+                              _cfgN(), "s", _asof())
+    assert isinstance(skip, OverlaySkip) and skip.reason == "SKIP_INVALID_STRUCTURE"
+
+
+def test_collar_skips_no_contract_when_window_empty():
+    skip = build_overlay_plan(_sig(OverlayType.COLLAR), _snap(100), _rich_broker(),
+                              _cfgN(), "s", _asof() + timedelta(days=400))
+    assert isinstance(skip, OverlaySkip) and skip.reason == "SKIP_NO_CONTRACT"
