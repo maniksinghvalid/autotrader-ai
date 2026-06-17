@@ -43,6 +43,11 @@ def evaluate(req: OrderRequest, snapshot: AccountSnapshot, cfg: RiskConfig,
     if snapshot.stale:
         return RiskDecision(False, "account snapshot is stale; refusing to trade")
 
+    # Option legs follow their own rules (coverage, contracts, premium); the
+    # equity long-only / notional / exposure caps below do not apply leg-by-leg.
+    if req.option is not None:
+        return _evaluate_option_leg(req, snapshot, cfg, ref_price)
+
     # 3. Daily-loss halt — skipped for reduce-only exits.
     if not is_reduce_only and snapshot.day_pnl <= -abs(cfg.daily_loss_limit):
         return RiskDecision(False, f"daily loss limit breached: pnl={snapshot.day_pnl}")
@@ -72,5 +77,42 @@ def evaluate(req: OrderRequest, snapshot: AccountSnapshot, cfg: RiskConfig,
     projected = snapshot.gross_exposure() + notional
     if not is_reduce_only and projected > cfg.max_gross_exposure:
         return RiskDecision(False, f"gross exposure {projected:.2f} > cap {cfg.max_gross_exposure}")
+
+    return RiskDecision(True, "OK")
+
+
+def _evaluate_option_leg(req: OrderRequest, snapshot: AccountSnapshot,
+                         cfg: RiskConfig, ref_price: Optional[float]) -> RiskDecision:
+    """O1 option gate. Env + stale already checked by the caller.
+    - underlying must be allow-listed
+    - contracts <= max_option_contracts (cap 0 => options off)
+    - a short OPEN leg must be share-covered (covered call) — never naked
+    - a long (debit) OPEN leg's premium outlay is capped per trade
+    Gross-exposure aggregation and the daily premium cap are later phases."""
+    opt = req.option
+    underlying = opt.underlying.upper()
+    if underlying not in cfg.allowed_symbols:
+        return RiskDecision(False, f"underlying {opt.underlying} not in allow-list")
+
+    premium = req.limit_price if (req.order_type == "LIMIT" and req.limit_price) else ref_price
+    if premium is None or not math.isfinite(premium) or premium <= 0:
+        return RiskDecision(False, "no usable option premium for risk sizing")
+
+    if req.qty > cfg.max_option_contracts:
+        return RiskDecision(False,
+                            f"contracts {req.qty} > cap {cfg.max_option_contracts}")
+
+    if req.side == "SELL" and req.position_effect == "OPEN":
+        need = req.qty * opt.multiplier
+        held = snapshot.position_qty(underlying)
+        if held < need:
+            return RiskDecision(False,
+                                f"uncovered short: held {held} < required {need} shares")
+    else:
+        cost = req.qty * premium * opt.multiplier
+        if not math.isfinite(cost) or cost > cfg.max_option_premium_per_trade:
+            return RiskDecision(False,
+                                f"option premium {cost:.2f} > cap "
+                                f"{cfg.max_option_premium_per_trade}")
 
     return RiskDecision(True, "OK")
