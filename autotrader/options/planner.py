@@ -42,6 +42,8 @@ def build_overlay_plan(signal: Signal, snapshot: AccountSnapshot, chain_provider
                        cfg: RiskConfig, signal_id: str,
                        asof: date) -> Union[OverlayPlan, OverlaySkip]:
     overlay = signal.overlay
+    if overlay is None:
+        raise ValueError("build_overlay_plan requires signal.overlay to be set")
     underlying = signal.symbol.upper()
 
     if overlay.value not in cfg.allowed_overlays:

@@ -131,3 +131,10 @@ def test_contracts_capped_by_config():
     plan = build_overlay_plan(_sig(OverlayType.COVERED_CALL), _snap(1000),
                               _broker(), _cfg(max_option_contracts=3), "s", _asof())
     assert isinstance(plan, OverlayPlan) and plan.legs[0].request.qty == 3
+
+
+def test_build_overlay_plan_requires_overlay():
+    import pytest
+    sig = Signal(symbol="US.AAPL", direction="BUY", confidence=0.7, rationale="x")  # no overlay
+    with pytest.raises(ValueError):
+        build_overlay_plan(sig, _snap(100), _broker(), _cfg(), "s", _asof())
