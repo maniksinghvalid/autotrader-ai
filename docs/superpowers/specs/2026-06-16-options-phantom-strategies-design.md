@@ -145,8 +145,29 @@ Planner pre-validates structure after selection (defense in depth + clear skip):
 - Diagonal: long-call strike **≤** short-call strike and long expiry **>** short expiry,
   else `SKIP_INVALID_STRUCTURE`.
 
-Other per-leg guards unchanged: allow-list (underlying), contracts cap, debit premium cap
-on long/BUY OPEN legs (`max_option_premium_per_trade`), daily-loss halt on OPEN legs.
+**NLV-derived premium caps (replaces the static `max_option_premium_per_trade` as the
+binding limit).** Let `NLV = snapshot.total_assets` and `budget = NLV × option_max_risk_pct`
+(new config, default 0.02 = 2%). The premium guard branches by debit vs credit:
+
+- **Debit / BUY OPEN** (long call/put, protective put, long diagonal leg, LEAP): max loss
+  is 100% of premium paid, so reject when `qty × premium × multiplier > budget`.
+- **Credit / SELL OPEN** (covered call, collar short call, spread/PMCC short leg): under the
+  200% stop framework (buy-to-close at 3× entry → loss = 2× premium collected), reject when
+  `2 × qty × premium × multiplier > budget` (i.e. collected ≤ `budget / 2`). This runs **in
+  addition to** the defined-risk coverage check above. It is an entry-discipline cap; the
+  stop that makes "2× premium" the true max loss is enforced in **O4** — documented, not yet
+  built (short legs are never naked, so coverage remains the hard safety guarantee meanwhile).
+
+`max_option_premium_per_trade` is retained as an **optional absolute dollar ceiling**
+(default `0.0` = off): when `> 0`, the leg's premium dollar amount (paid for debits, collected
+for credits) must also be `≤` it, so the effective cap is the tighter of the two.
+
+Other per-leg guards unchanged: allow-list (underlying), contracts cap, daily-loss halt on
+OPEN legs.
+
+> **NLV note:** `SimBroker.get_account()` reports `total_assets = cash` only (no position
+> market value), so option test fixtures must hold enough cash that NLV supports these caps
+> after any seeded share purchase.
 
 **Why intra-plan coverage is sound:** the engine submits long-first and returns early if
 the covering leg's ack is `REJECTED`/`UNKNOWN`, so a short leg is only evaluated/submitted
@@ -173,15 +194,19 @@ first leg failure — that is the safe-residual behavior. Changes:
 | Field | Default | Env | Role |
 |---|---|---|---|
 | `option_default_contracts` | `1` | `RISK_OPTION_DEFAULT_CONTRACTS` | sizing for non-share-covered strategies (NEW) |
+| `option_max_risk_pct` | `0.02` | `RISK_OPTION_MAX_RISK_PCT` | fraction of NLV at risk per leg; drives the premium cap (NEW) |
 | `max_option_contracts` | `0` | `RISK_MAX_OPTION_CONTRACTS` | per-leg contract cap (existing) |
-| `max_option_premium_per_trade` | `0.0` | `RISK_MAX_OPTION_PREMIUM_PER_TRADE` | per-trade debit cap (existing) |
+| `max_option_premium_per_trade` | `0.0` | `RISK_MAX_OPTION_PREMIUM_PER_TRADE` | optional absolute dollar ceiling; `0` = off (existing, repurposed) |
 | `allowed_overlays` | `frozenset()` | `RISK_ALLOWED_OVERLAYS` | which overlays enabled (existing) |
 | `option_target_delta` / `option_dte_min` / `option_dte_max` | 0.30 / 30 / 45 | existing | **fallback** defaults for legs without overrides |
 
-Operator note (not code): a deep-ITM LEAP / PMCC long call can cost far more than the
-current `max_option_premium_per_trade`; that human-reviewed cap must be raised before
-enabling `LEAP` or `CALL_DIAGONAL`. A vertical's net debit ≤ its long-leg premium, so the
-per-trade premium cap conservatively bounds spread risk.
+Operator note (not code): the per-leg premium cap now scales with NLV
+(`NLV × option_max_risk_pct`), so a deep-ITM LEAP / PMCC long call is sized against account
+equity automatically — no static dollar tuning needed. Set `option_max_risk_pct` to `0.01`
+for a 1% ceiling. A vertical's net debit ≤ its long-leg premium, so the debit cap
+conservatively bounds spread risk. The **5% buying-power rule** (no single position locks up
+> 5% of buying power) is deferred (see §11): it needs a buying-power source and a short-leg
+margin model paper v1 doesn't expose cleanly.
 
 ## 10. Testing (TDD, mirrors existing test layout)
 
@@ -212,6 +237,12 @@ per-trade premium cap conservatively bounds spread risk.
   not needed while v1 is paper-only with synchronous SimBroker fills; noted for the live gate.
 - Risk-/confidence-scaled option position sizing — non-covered strategies use a fixed
   `option_default_contracts` for v1.
+- **5% buying-power rule** — capping per-position capital locked (premium for debits, margin
+  for shorts) at 5% of buying power. Deferred: paper v1 has no clean buying-power / short-margin
+  source, and the 2% NLV premium cap is the tighter, more direct per-trade control.
+- **Enforcement of the 200% stop-loss** that makes "2× premium collected" the credit leg's
+  true max loss — that stop is O4. Until then the credit cap is an entry-discipline filter and
+  coverage (no naked shorts) is the hard safety guarantee.
 
 ## 12. Files touched
 

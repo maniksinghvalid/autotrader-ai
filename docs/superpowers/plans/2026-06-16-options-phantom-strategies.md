@@ -386,7 +386,7 @@ git commit -m "feat(options): select_contract pin_expiry for single-expiry multi
 
 ---
 
-### Task 5: Config `option_default_contracts`
+### Task 5: Config `option_default_contracts` + `option_max_risk_pct`
 
 **Files:**
 - Modify: `autotrader/config.py:38-48` (dataclass), `:101-108` (`load_risk_config`)
@@ -408,14 +408,27 @@ def test_option_default_contracts_parses_env(monkeypatch):
     monkeypatch.setenv("RISK_OPTION_DEFAULT_CONTRACTS", "3")
     cfg = load_risk_config()
     assert cfg.option_default_contracts == 3
+
+
+def test_option_max_risk_pct_defaults_to_two_percent(monkeypatch):
+    monkeypatch.setenv("RISK_ALLOWED_SYMBOLS", "US.AAPL")
+    cfg = load_risk_config()
+    assert cfg.option_max_risk_pct == 0.02
+
+
+def test_option_max_risk_pct_parses_env(monkeypatch):
+    monkeypatch.setenv("RISK_ALLOWED_SYMBOLS", "US.AAPL")
+    monkeypatch.setenv("RISK_OPTION_MAX_RISK_PCT", "0.01")
+    cfg = load_risk_config()
+    assert cfg.option_max_risk_pct == 0.01
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `python3 -m pytest tests/test_risk_core_options.py -k option_default_contracts -v`
-Expected: FAIL — `AttributeError: ... 'option_default_contracts'`.
+Run: `python3 -m pytest tests/test_risk_core_options.py -k "option_default_contracts or option_max_risk_pct" -v`
+Expected: FAIL — `AttributeError: ... 'option_default_contracts'` / `'option_max_risk_pct'`.
 
-- [ ] **Step 3: Add the field and parsing**
+- [ ] **Step 3: Add the fields and parsing**
 
 In `autotrader/config.py`, add to the options block of the `RiskConfig` dataclass (after `option_profit_target_pct`):
 
@@ -424,6 +437,11 @@ In `autotrader/config.py`, add to the options block of the `RiskConfig` dataclas
     # Contract count for strategies that are NOT share-covered (spread / diagonal /
     # LEAP). Share-covered overlays (covered call, collar) still size off held shares.
     option_default_contracts: int = 1
+    # Fraction of NLV (snapshot.total_assets) at risk per option leg. Drives the
+    # premium cap: debit legs cap paid premium at NLV*pct; credit legs cap collected
+    # premium at NLV*pct/2 (200% stop => max loss 2x premium). max_option_premium_per_trade
+    # remains an OPTIONAL absolute dollar ceiling (0 = off); the tighter of the two binds.
+    option_max_risk_pct: float = 0.02
 ```
 
 In `load_risk_config()`, add to the `RiskConfig(...)` constructor call (after `option_profit_target_pct=...`):
@@ -431,18 +449,19 @@ In `load_risk_config()`, add to the `RiskConfig(...)` constructor call (after `o
 ```python
         option_profit_target_pct=_f("RISK_OPTION_PROFIT_TARGET_PCT", 0.5),
         option_default_contracts=int(_f("RISK_OPTION_DEFAULT_CONTRACTS", 1)),
+        option_max_risk_pct=_f("RISK_OPTION_MAX_RISK_PCT", 0.02),
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `python3 -m pytest tests/test_risk_core_options.py -k option_default_contracts -v`
+Run: `python3 -m pytest tests/test_risk_core_options.py -k "option_default_contracts or option_max_risk_pct" -v`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add autotrader/config.py tests/test_risk_core_options.py
-git commit -m "feat(config): option_default_contracts for non-share-covered overlays"
+git commit -m "feat(config): option_default_contracts + NLV-based option_max_risk_pct"
 ```
 
 ---
@@ -691,10 +710,10 @@ git commit -m "feat(options): planner per-leg selection, anchor/pin, sizing fork
 
 ---
 
-### Task 7: Risk core — defined-risk coverage via `coverage_legs`
+### Task 7: Risk core — defined-risk coverage + NLV-derived premium caps
 
 **Files:**
-- Modify: `autotrader/risk_core.py:9` (import), `:46-64` (`evaluate`), `:108-138` (`_evaluate_option_leg` + new helper)
+- Modify: `autotrader/risk_core.py:9` (import), `:46-64` (`evaluate`), `:108-155` (`_evaluate_option_leg` + new helper)
 - Test: `tests/test_risk_core_options.py`
 
 - [ ] **Step 1: Write the failing tests**
@@ -768,12 +787,47 @@ def test_collar_short_call_still_share_covered():
     # No coverage_legs needed: 100 shares cover the short call (collar).
     d = evaluate(_call(qty=1), _snap(aapl_shares=100), _cfg(), ref_price=1.5)
     assert d.approved, d.reason
+
+
+# --- NLV-derived premium caps (option_max_risk_pct) -------------------------
+# _snap() NLV (total_assets) is 70000 -> budget = 70000 * 0.02 = 1400.
+
+def test_debit_leg_rejected_by_nlv_budget():
+    # gross = 20 * 1 * 100 = 2000 > 1400 budget; absolute ceiling off.
+    d = evaluate(_put(qty=1), _snap(),
+                 _cfg(max_option_premium_per_trade=0.0, option_max_risk_pct=0.02),
+                 ref_price=20.0)
+    assert not d.approved and "budget" in d.reason.lower()
+
+
+def test_credit_leg_rejected_by_double_premium_rule():
+    # collected 1000, 2x = 2000 > 1400 budget; short call covered by 100 shares.
+    d = evaluate(_call(qty=1), _snap(aapl_shares=100),
+                 _cfg(max_option_premium_per_trade=0.0, option_max_risk_pct=0.02),
+                 ref_price=10.0)
+    assert not d.approved and "2x" in d.reason.lower()
+
+
+def test_credit_leg_within_budget_approved():
+    # collected 500, 2x = 1000 <= 1400 budget.
+    d = evaluate(_call(qty=1), _snap(aapl_shares=100),
+                 _cfg(max_option_premium_per_trade=0.0), ref_price=5.0)
+    assert d.approved, d.reason
+
+
+def test_absolute_ceiling_binds_when_tighter_than_budget():
+    # gross 400 < 1400 budget, but a $300 absolute ceiling rejects it.
+    d = evaluate(_put(qty=1), _snap(), _cfg(max_option_premium_per_trade=300.0),
+                 ref_price=4.0)
+    assert not d.approved and "absolute cap" in d.reason.lower()
 ```
+
+Note: the pre-existing `test_long_put_premium_cap_rejected` (ref 9.0 → gross 900) still passes — 900 < the 1400 NLV budget but > the `_cfg` absolute ceiling of 800, so the ceiling rejects it (reason contains "premium").
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `python3 -m pytest tests/test_risk_core_options.py -k "covered_by_long or without_long_cover or diagonal_approved or insufficient_when_strike or collar_short" -v`
-Expected: FAIL — `evaluate()` has no `coverage_legs` kwarg; short puts rejected even when covered.
+Run: `python3 -m pytest tests/test_risk_core_options.py -k "covered_by_long or without_long_cover or diagonal_approved or insufficient_when_strike or collar_short or nlv_budget or double_premium or within_budget or absolute_ceiling" -v`
+Expected: FAIL — `evaluate()` has no `coverage_legs` kwarg; short puts rejected even when covered; NLV caps not yet implemented.
 
 - [ ] **Step 3: Add coverage logic**
 
@@ -831,14 +885,19 @@ def _evaluate_option_leg(req: OrderRequest, snapshot: AccountSnapshot,
                          coverage_legs: Tuple[OrderRequest, ...] = ()) -> RiskDecision:
 ```
 
-Replace the existing `if req.side == "SELL" and req.position_effect == "OPEN":` block (the share-only guard) with:
+Replace the entire premium/coverage section — from `if req.side == "SELL" and req.position_effect == "OPEN":` down to the end of its `else:` debit branch (i.e. everything between the contracts-cap check and the trailing daily-loss block) — with:
 
 ```python
+    nlv = snapshot.total_assets
+    budget = nlv * cfg.option_max_risk_pct          # max acceptable loss for this leg
+    abs_ceiling = cfg.max_option_premium_per_trade  # optional absolute $ ceiling; 0 = off
+    gross = req.qty * premium * opt.multiplier      # premium dollars (paid or collected)
+
     if req.side == "SELL" and req.position_effect == "OPEN":
+        # Defined-risk coverage: shares (CALLs only) or a long leg in the same plan.
+        # Shares never cover a short PUT — only a long put bounds it.
         need = req.qty  # contracts
         existing_short = _short_option_contracts(snapshot, underlying, opt.right)
-        # Shares only cover short CALLs (covered call / collar). Short PUTs are
-        # never share-covered — only a long put bounds them.
         share_cover = (snapshot.position_qty(underlying) // opt.multiplier
                        if opt.right == "CALL" else 0)
         long_cover = _long_cover_contracts(coverage_legs, opt)
@@ -849,10 +908,29 @@ Replace the existing `if req.side == "SELL" and req.position_effect == "OPEN":` 
                 f"uncovered short: covered {available} < required {need} contract(s) "
                 f"(shares cover {share_cover}, long-leg cover {long_cover}, "
                 f"{existing_short} short {opt.right} contract(s) open)")
+        # Credit-leg premium cap: with the 200% stop (buy-to-close at 3x entry) the max
+        # loss is 2x premium collected. Entry-discipline; the stop is enforced in O4.
+        if 2.0 * gross > budget:
+            return RiskDecision(
+                False,
+                f"short option premium risk {2.0 * gross:.2f} (2x collected {gross:.2f}) "
+                f"> budget {budget:.2f} (NLV {nlv:.2f} x {cfg.option_max_risk_pct})")
+        if abs_ceiling > 0 and gross > abs_ceiling:
+            return RiskDecision(False,
+                                f"option premium {gross:.2f} > absolute cap {abs_ceiling}")
     else:
+        # Debit (long) OPEN: max loss = 100% of premium paid.
+        if not math.isfinite(gross) or gross > budget:
+            return RiskDecision(
+                False,
+                f"option premium debit {gross:.2f} > budget {budget:.2f} "
+                f"(NLV {nlv:.2f} x {cfg.option_max_risk_pct})")
+        if abs_ceiling > 0 and gross > abs_ceiling:
+            return RiskDecision(False,
+                                f"option premium {gross:.2f} > absolute cap {abs_ceiling}")
 ```
 
-(The `else:` debit-premium branch and the daily-loss block after it are unchanged.)
+(The trailing daily-loss block — `if req.position_effect == "OPEN" and snapshot.day_pnl <= ...` — stays unchanged, after this section. `premium` and the contracts-cap check above this section are also unchanged.)
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -863,7 +941,7 @@ Expected: PASS (new + all existing O1 risk tests — coverage math is contract-e
 
 ```bash
 git add autotrader/risk_core.py tests/test_risk_core_options.py
-git commit -m "feat(risk): defined-risk coverage for multi-leg option shorts"
+git commit -m "feat(risk): defined-risk coverage + NLV-derived debit/credit premium caps"
 ```
 
 ---
@@ -876,7 +954,24 @@ git commit -m "feat(risk): defined-risk coverage for multi-leg option shorts"
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `tests/test_options_e2e.py`. First extend the fixtures to a multi-strike/expiry chain and an all-overlays config:
+First, **update the existing `_broker` helper** (top of `tests/test_options_e2e.py`) so NLV survives the seeded share purchase under the NLV-based caps — change its `SimBroker(...)` call to pass `cash=1_000_000`:
+
+```python
+def _broker(shares=100):
+    b = SimBroker(quotes={"US.AAPL": 200.0, "US.AAPL260721C210000": 1.5,
+                          "US.AAPL260721P190000": 1.4},
+                  cash=1_000_000, option_chains=_chains())
+    if shares:
+        from autotrader.domain import OrderRequest
+        b.place_order(OrderRequest(symbol="US.AAPL", side="BUY", qty=shares,
+                                   order_type="MARKET", limit_price=None,
+                                   client_order_id="seed"))
+    return b
+```
+
+(Rationale: `SimBroker.get_account()` reports `total_assets = cash` only; the default 10000 cash goes negative after buying 200 shares @ $200, which would zero the NLV budget and reject every leg.)
+
+Then extend the fixtures to a multi-strike/expiry chain and an all-overlays config:
 
 ```python
 def _rich_chains():
@@ -902,7 +997,7 @@ def _rich_broker(shares=0):
         "US.AAPL260721C210000": 1.5,
         "US.AAPL260721P200000": 4.0, "US.AAPL260721P190000": 2.0,
         "US.AAPL260721P185000": 1.5,
-    }, option_chains=_rich_chains())
+    }, cash=1_000_000, option_chains=_rich_chains())
     if shares:
         from autotrader.domain import OrderRequest
         b.place_order(OrderRequest(symbol="US.AAPL", side="BUY", qty=shares,
@@ -975,7 +1070,7 @@ class _RejectShortBroker(SimBroker):
 def test_spread_short_leg_rejected_leaves_loud_long_residual(tmp_path):
     b = _RejectShortBroker(quotes={
         "US.AAPL": 200.0, "US.AAPL260721P200000": 4.0, "US.AAPL260721P185000": 1.5,
-    }, option_chains=_rich_chains())
+    }, cash=1_000_000, option_chains=_rich_chains())
     eng = _engine(b, _cfgN(), tmp_path)
     res = eng.submit_external_signal(
         Signal("US.AAPL", "SELL", 0.7, "bear put", overlay=OverlayType.BEAR_PUT_SPREAD))
@@ -1075,15 +1170,23 @@ In `RUNBOOK.md`, in the options-overlay section, add the four strategies to the 
 - Per-leg delta/DTE targets are structural (declared in `options/overlays.py`), not
   env vars. The global `RISK_OPTION_TARGET_DELTA / _DTE_MIN / _DTE_MAX` remain the
   fallback for legs that declare no override (covered call, protective put).
-- CAVEAT: a deep-ITM LEAP / PMCC long call can cost far more than the default
-  `RISK_MAX_OPTION_PREMIUM_PER_TRADE`. Raise that human-reviewed cap before enabling
-  `LEAP` or `CALL_DIAGONAL`, or the long leg is rejected on premium.
+- PREMIUM CAP (NLV-derived): `RISK_OPTION_MAX_RISK_PCT` (default 0.02 = 2%) sets the
+  fraction of NLV (`total_assets`) at risk per leg. Debit legs (long call/put,
+  protective put, LEAP, long diagonal leg) cap **premium paid** at `NLV × pct`; credit
+  legs (covered call, collar short call, spread/PMCC short leg) cap **premium collected**
+  at `NLV × pct / 2` (the 200% stop ⇒ max loss = 2× premium). No static dollar tuning is
+  needed — the cap scales with equity. Set `RISK_OPTION_MAX_RISK_PCT=0.01` for a 1% ceiling.
+- `RISK_MAX_OPTION_PREMIUM_PER_TRADE` (default 0 = off) is now an OPTIONAL absolute dollar
+  ceiling layered on top; when set, the tighter of it and the NLV cap binds.
+- The credit-leg "2× premium" max-loss assumes the 200% stop-loss, which is enforced in a
+  later phase (O4). Until then it is an entry-discipline cap; the no-naked-short coverage
+  guard is the hard safety guarantee. The **5% buying-power rule** is a deferred follow-up.
 - Partial fill: legs submit long-first; if a later leg fails after the long fills,
   the engine returns `OVERLAY_RESIDUAL_LONG` and leaves the long-only (risk-defined)
   residual in place — it is never a naked short. No automatic unwind (by design).
 ```
 
-If `config/risk.config.example` exists and lists option vars, add `RISK_OPTION_DEFAULT_CONTRACTS=1` there with a comment mirroring the above.
+If `config/risk.config.example` exists and lists option vars, add `RISK_OPTION_DEFAULT_CONTRACTS=1` and `RISK_OPTION_MAX_RISK_PCT=0.02` there with comments mirroring the above.
 
 - [ ] **Step 3: Commit**
 
@@ -1099,7 +1202,7 @@ git commit -m "docs(options): document phantom strategies, default-contracts kno
 - [ ] **Run the full offline suite**
 
 Run: `python3 -m pytest -q`
-Expected: all tests pass, 0 failures. The baseline was green; this plan adds ~25 tests and modifies two pre-existing tests (`test_unsupported_overlays_absent_from_registry` → `test_phantom_strategies_now_registered`; `test_skip_unsupported_overlay` → monkeypatched).
+Expected: all tests pass, 0 failures. The baseline was green; this plan adds ~33 tests and modifies a few pre-existing items: `test_unsupported_overlays_absent_from_registry` → `test_phantom_strategies_now_registered`; `test_skip_unsupported_overlay` → monkeypatched; and the `_broker` helper in `tests/test_options_e2e.py` gains `cash=1_000_000` (the NLV-based caps need realistic account equity, since `SimBroker` reports `total_assets = cash`). The pre-existing `test_long_put_premium_cap_rejected` is unchanged and still passes via the absolute-ceiling path.
 
 - [ ] **Confirm no naked-short regression**
 
