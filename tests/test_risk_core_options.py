@@ -280,3 +280,11 @@ def test_absolute_ceiling_binds_when_tighter_than_budget():
     d = evaluate(_put(qty=1), _snap(), _cfg(max_option_premium_per_trade=300.0),
                  ref_price=4.0)
     assert not d.approved and "absolute cap" in d.reason.lower()
+
+
+def test_option_leg_rejected_when_nlv_negative():
+    # Negative NLV -> negative budget -> every option OPEN leg must reject, never approve.
+    snap = AccountSnapshot(cash=-5000, total_assets=-5000, day_pnl=0.0,
+                           stale=False, positions=(Position("US.AAPL", 100, 200.0),))
+    d = evaluate(_call(qty=1), snap, _cfg(max_option_premium_per_trade=0.0), ref_price=1.5)
+    assert not d.approved, d.reason
