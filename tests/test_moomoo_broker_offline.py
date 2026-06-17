@@ -39,8 +39,11 @@ class _FakeCommon:
     """Stand-in for the vendored common.py surface MoomooBroker uses."""
     RET_OK = 0
 
+    def __init__(self, env="SIMULATE"):
+        self._env_name = env
+
     def get_default_trd_env(self):
-        return "SIMULATE"
+        return self._env_name
 
     def is_empty(self, data):
         return data is None or len(data) == 0
@@ -122,7 +125,7 @@ def test_get_account_raises_when_accinfo_fails():
 
 
 class _CapturingTrade:
-    """Records kwargs passed to deal_list_query for inspection."""
+    """Records kwargs passed to deal_list_query for inspection (LIVE deal feed)."""
     def __init__(self):
         self.captured = {}
 
@@ -131,11 +134,27 @@ class _CapturingTrade:
         return 0, None  # RET_OK=0, empty data -> reconcile returns []
 
 
-def _broker_with_trade(trade):
-    """Extend the existing _broker() helper with a specific trade context."""
+class _OrderListTrade:
+    """Fake for the PAPER fill-synthesis path: the deal feed is unsupported (mirrors
+    Moomoo's 'Paper trading does not support deal data'), and order_list_query
+    returns the given order rows."""
+    def __init__(self, order_rows):
+        self._order_rows = order_rows
+        self.deal_called = False
+
+    def deal_list_query(self, **kwargs):
+        self.deal_called = True
+        return -1, "Paper trading does not support deal data."
+
+    def order_list_query(self, **kwargs):
+        return 0, _DF(self._order_rows)
+
+
+def _broker_with_trade(trade, env="SIMULATE"):
+    """Extend the existing _broker() helper with a specific trade context + env."""
     from autotrader.rate_limiter import RateLimiter
     b = MoomooBroker.__new__(MoomooBroker)
-    b._c = _FakeCommon()
+    b._c = _FakeCommon(env)
     b._trade = trade
     b._quote = None
     b._acc_id = 1
@@ -145,20 +164,53 @@ def _broker_with_trade(trade):
 
 
 def test_reconcile_fills_since_passes_begin_time():
-    """reconcile_fills(since=...) must forward begin_time to deal_list_query."""
+    """LIVE: reconcile_fills(since=...) must forward begin_time to deal_list_query."""
     trade = _CapturingTrade()
-    b = _broker_with_trade(trade)
+    b = _broker_with_trade(trade, env="REAL")
     b.reconcile_fills(since="2026-06-12 09:30:00")
     assert "begin_time" in trade.captured, "begin_time must be forwarded when since is set"
     assert trade.captured["begin_time"] == "2026-06-12 09:30:00"
 
 
 def test_reconcile_fills_no_since_omits_begin_time():
-    """reconcile_fills(since=None) must NOT pass begin_time to deal_list_query."""
+    """LIVE: reconcile_fills(since=None) must NOT pass begin_time to deal_list_query."""
     trade = _CapturingTrade()
-    b = _broker_with_trade(trade)
+    b = _broker_with_trade(trade, env="REAL")
     b.reconcile_fills(since=None)
     assert "begin_time" not in trade.captured, "begin_time must be absent when since=None"
+
+
+def test_reconcile_fills_paper_synthesizes_from_filled_orders():
+    """PAPER: the deal feed is unsupported, so fills are reconstructed from the order
+    list. One fill per order with dealt_qty > 0 (FILLED_ALL or FILLED_PART);
+    unfilled/rejected orders produce none."""
+    rows = [
+        _Row(order_id="810543", code="US.SCHF", trd_side="BUY", order_status="FILLED_ALL",
+             dealt_qty=97, dealt_avg_price=28.30, updated_time="2026-06-17 10:38:52"),
+        _Row(order_id="810545", code="US.O", trd_side="BUY", order_status="FILLED_PART",
+             dealt_qty=40, dealt_avg_price=61.59, updated_time="2026-06-17 10:39:40"),
+        _Row(order_id="810840", code="US.MSFT", trd_side="BUY", order_status="SUBMITTED",
+             dealt_qty=0, dealt_avg_price=0, updated_time="2026-06-17 14:10:00"),
+        _Row(order_id="810999", code="US.MSFT", trd_side="SELL", order_status="FAILED",
+             dealt_qty=0, dealt_avg_price=0, updated_time="2026-06-17 14:10:31"),
+    ]
+    b = _broker_with_trade(_OrderListTrade(rows), env="SIMULATE")
+    fills = b.reconcile_fills(since=None)
+    by = {f.symbol: f for f in fills}
+    assert set(by) == {"US.SCHF", "US.O"}                  # unfilled + rejected dropped
+    assert by["US.SCHF"].fill_id == "paper-810543"          # stable id -> idempotent
+    assert by["US.SCHF"].side == "BUY" and by["US.SCHF"].qty == 97
+    assert by["US.SCHF"].price == 28.30
+    assert by["US.SCHF"].ts.startswith("2026-06-17")
+    assert by["US.O"].qty == 40                             # partial fill captured
+
+
+def test_reconcile_fills_paper_never_relies_on_deal_feed():
+    """PAPER: must not depend on the unsupported deal feed even when no orders exist."""
+    trade = _OrderListTrade([])
+    b = _broker_with_trade(trade, env="SIMULATE")
+    assert b.reconcile_fills(since=None) == []
+    assert trade.deal_called is False
 
 
 def test_place_order_raises_rate_limit_when_order_limiter_drained():

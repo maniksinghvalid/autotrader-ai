@@ -267,7 +267,19 @@ class MoomooBroker(Broker):
     def get_open_orders_count(self) -> int:  # convenience for logs
         return len(self.get_open_orders())
 
+    def _is_paper(self) -> bool:
+        """SIMULATE accounts have no deal/fill feed — deal_list_query returns
+        ret=-1 'Paper trading does not support deal data'. Tolerates _env()
+        yielding either a TrdEnv enum (live) or a plain str (tests)."""
+        return self._c.format_enum(self._env()).upper() == "SIMULATE"
+
     def reconcile_fills(self, since: Optional[str]) -> List[Fill]:
+        # Paper/SIMULATE: the deal feed is unavailable, so reconstruct fills from
+        # the order list (which IS supported on paper). Without this, the fills
+        # projection stays permanently empty on paper and the EOD report shows no
+        # activity despite real executions. Live accounts use the real deal feed.
+        if self._is_paper():
+            return self._fills_from_orders()
         if not self._refresh_rl.acquire(timeout=60.0):
             return []
         kwargs = dict(trd_env=self._env(), acc_id=self._acc_id, refresh_cache=True)
@@ -287,5 +299,40 @@ class MoomooBroker(Broker):
                 qty=self._c.safe_float(self._c.safe_get(row, "qty", default=0)),
                 price=self._c.safe_float(self._c.safe_get(row, "price", default=0)),
                 ts=str(self._c.safe_get(row, "create_time", default="")),
+            ))
+        return out
+
+    def _fills_from_orders(self) -> List[Fill]:
+        """Synthesize fills from the order list for paper accounts: one Fill per
+        order with executed quantity (dealt_qty > 0), keyed by order_id so it is
+        idempotent across a day's reconciles (db.record_fills dedupes by fill_id).
+
+        Caveat: a partial fill is captured at its dealt_qty as of this reconcile;
+        the stable fill_id means a later top-up is not re-counted. Paper market
+        orders fill atomically, and reconciles run after the entry window closes
+        (orders terminal), so in practice this matches the real executed quantity."""
+        if not self._refresh_rl.acquire(timeout=60.0):
+            return []
+        ret, data = self._trade.order_list_query(
+            trd_env=self._env(), acc_id=self._acc_id, refresh_cache=True)
+        if not self._ok(ret) or self._c.is_empty(data):
+            return []
+        out: List[Fill] = []
+        for i in range(len(data)):
+            row = data.iloc[i]
+            dealt_qty = self._c.safe_float(self._c.safe_get(row, "dealt_qty", default=0))
+            if dealt_qty <= 0:
+                continue  # submitted/rejected/cancelled with no execution -> no fill
+            order_id = str(self._c.safe_get(row, "order_id", "orderID", default=""))
+            if not order_id:
+                continue
+            side_raw = self._c.format_enum(self._c.safe_get(row, "trd_side", default="BUY")).upper()
+            out.append(Fill(
+                fill_id=f"paper-{order_id}",
+                symbol=str(self._c.safe_get(row, "code", default="")),
+                side="BUY" if side_raw == "BUY" else "SELL",
+                qty=dealt_qty,
+                price=self._c.safe_float(self._c.safe_get(row, "dealt_avg_price", default=0)),
+                ts=str(self._c.safe_get(row, "updated_time", "create_time", default="")),
             ))
         return out
