@@ -47,3 +47,30 @@ def test_legspec_rejects_bad_side():
 
 def test_leap_enum_value_exists():
     assert OverlayType.LEAP.value == "LEAP"
+
+
+def test_legspec_accepts_per_leg_targets():
+    leg = LegSpec(right="CALL", side="BUY", target_delta=0.80, dte_min=180, dte_max=365)
+    assert leg.target_delta == 0.80 and leg.dte_min == 180 and leg.dte_max == 365
+
+
+def test_legspec_targets_default_to_none():
+    leg = LegSpec(right="CALL", side="SELL")
+    assert leg.target_delta is None and leg.dte_min is None and leg.dte_max is None
+
+
+def test_legspec_rejects_bad_target_delta():
+    import pytest
+    with pytest.raises(ValueError):
+        LegSpec(right="CALL", side="BUY", target_delta=1.5)
+
+
+def test_legspec_rejects_inverted_dte():
+    import pytest
+    with pytest.raises(ValueError):
+        LegSpec(right="CALL", side="BUY", dte_min=90, dte_max=30)
+
+
+def test_overlaydef_single_expiry_defaults_false():
+    d = OverlayDef(requires_underlying=True, legs=(LegSpec(right="CALL", side="SELL"),))
+    assert d.single_expiry is False

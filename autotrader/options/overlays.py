@@ -6,7 +6,7 @@ spreads later is a new entry here — no schema or enum change. Imports domain o
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 from autotrader.domain import OptionRight, OverlayType, PositionEffect, Side
 
@@ -14,11 +14,16 @@ from autotrader.domain import OptionRight, OverlayType, PositionEffect, Side
 @dataclass(frozen=True)
 class LegSpec:
     """One leg of an overlay, pre-contract-resolution. `ratio` is contracts per
-    100 shares of underlying (1 = one contract per round lot)."""
+    100 shares of underlying (1 = one contract per round lot). target_delta /
+    dte_min / dte_max are per-leg selection overrides; when None the planner
+    falls back to the global config (cfg.option_target_delta / dte_min / dte_max)."""
     right: OptionRight
     side: Side
     position_effect: PositionEffect = "OPEN"
     ratio: int = 1
+    target_delta: Optional[float] = None
+    dte_min: Optional[int] = None
+    dte_max: Optional[int] = None
 
     def __post_init__(self):
         if self.right not in ("CALL", "PUT"):
@@ -29,6 +34,13 @@ class LegSpec:
             raise ValueError(f"LegSpec.position_effect must be OPEN/CLOSE, got {self.position_effect!r}")
         if self.ratio < 1:
             raise ValueError(f"LegSpec.ratio must be >= 1, got {self.ratio}")
+        if self.target_delta is not None and not (0.0 < self.target_delta <= 1.0):
+            raise ValueError(f"LegSpec.target_delta must be in (0,1], got {self.target_delta}")
+        if (self.dte_min is not None and self.dte_max is not None
+                and self.dte_min > self.dte_max):
+            raise ValueError(f"LegSpec dte_min {self.dte_min} > dte_max {self.dte_max}")
+        if self.dte_min is not None and self.dte_min < 0:
+            raise ValueError(f"LegSpec.dte_min must be >= 0, got {self.dte_min}")
 
 
 @dataclass(frozen=True)
@@ -44,6 +56,7 @@ class ExitRule:
 class OverlayDef:
     requires_underlying: bool
     legs: Tuple[LegSpec, ...]
+    single_expiry: bool = False
 
 
 REGISTRY: Dict[OverlayType, OverlayDef] = {
