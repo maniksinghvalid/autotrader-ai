@@ -183,12 +183,25 @@ class TradeEngine:
                 and any(l.request.position_effect == "OPEN" for l in plan.legs)):
             return TickResult("ENTRY_CLOSED", f"{plan.overlay.value}:{plan.underlying}")
 
+        # Defined-risk coverage context: the plan's long OPEN legs cover its short
+        # legs (the risk core recognizes this). Long legs are submitted first, so a
+        # short is only ever placed after its cover is acked.
+        coverage = tuple(l.request for l in plan.legs
+                         if l.request.side == "BUY" and l.request.position_effect == "OPEN")
+
         last_boid = None
+        filled_long = []  # symbols of long legs already filled this overlay
         for leg in sorted(plan.legs, key=lambda l: 0 if l.request.side == "BUY" else 1):
             req = leg.request
-            decision = evaluate(req, snap, self._cfg, ref_price=leg.quote.premium)
+            decision = evaluate(req, snap, self._cfg, ref_price=leg.quote.premium,
+                                coverage_legs=coverage)
             if not decision.approved:
                 logger.warning("overlay leg rejected (%s): %s", req.symbol, decision.reason)
+                if filled_long:
+                    logger.warning("overlay %s left long-only residual %s after reject: %s",
+                                   plan.correlation_id, filled_long, decision.reason)
+                    return TickResult("OVERLAY_RESIDUAL_LONG",
+                                      f"{plan.correlation_id}:{','.join(filled_long)}")
                 return TickResult("REJECTED_BY_RISK", decision.reason)
             ack = self._router.submit(req)
             if self._db:
@@ -197,10 +210,17 @@ class TradeEngine:
                     side=req.side, qty=req.qty, order_type=req.order_type,
                     limit_price=leg.quote.premium, broker_order_id=ack.broker_order_id,
                     state=ack.state.value)
-            if ack.state is OrderState.UNKNOWN:
-                return TickResult("ORDER_UNKNOWN", ack.client_order_id)
-            if ack.state is OrderState.REJECTED:
-                return TickResult("ORDER_REJECTED", ack.client_order_id)
+            if ack.state in (OrderState.UNKNOWN, OrderState.REJECTED):
+                if filled_long:
+                    logger.warning("overlay %s left long-only residual %s after %s",
+                                   plan.correlation_id, filled_long, ack.state.value)
+                    return TickResult("OVERLAY_RESIDUAL_LONG",
+                                      f"{plan.correlation_id}:{','.join(filled_long)}")
+                action = "ORDER_UNKNOWN" if ack.state is OrderState.UNKNOWN else "ORDER_REJECTED"
+                return TickResult(action, ack.client_order_id)
+            if (req.side == "BUY" and req.position_effect == "OPEN"
+                    and ack.state is OrderState.FILLED):
+                filled_long.append(req.symbol)
             last_boid = ack.broker_order_id
         return TickResult("OVERLAY_PLACED", f"{plan.correlation_id}:{last_boid}")
 

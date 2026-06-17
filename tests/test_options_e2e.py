@@ -46,7 +46,7 @@ def _engine(broker, cfg, tmp_path):
 def _broker(shares=100):
     b = SimBroker(quotes={"US.AAPL": 200.0, "US.AAPL260721C210000": 1.5,
                           "US.AAPL260721P190000": 1.4},
-                  option_chains=_chains())
+                  cash=1_000_000, option_chains=_chains())
     if shares:
         from autotrader.domain import OrderRequest
         b.place_order(OrderRequest(symbol="US.AAPL", side="BUY", qty=shares,
@@ -123,3 +123,113 @@ def test_covered_call_blocked_when_entry_gate_closed(tmp_path):
     res = eng.submit_external_signal(
         Signal("US.AAPL", "SELL", 0.7, "Covered Call", overlay=OverlayType.COVERED_CALL))
     assert res.action == "ENTRY_CLOSED", res
+
+
+# ---------------------------------------------------------------------------
+# Task 8 — multi-leg overlays: coverage wiring + loud long-only residual
+# ---------------------------------------------------------------------------
+
+def _rich_chains():
+    near, far = ASOF + timedelta(days=35), ASOF + timedelta(days=300)
+    return {
+        ("US.AAPL", "CALL"): [
+            OptionQuote("US.AAPL270412C180000", "US.AAPL", far, 180, "CALL", 0.80, 30.0),
+            OptionQuote("US.AAPL270412C195000", "US.AAPL", far, 195, "CALL", 0.70, 20.0),
+            OptionQuote("US.AAPL260721C210000", "US.AAPL", near, 210, "CALL", 0.30, 1.5),
+        ],
+        ("US.AAPL", "PUT"): [
+            OptionQuote("US.AAPL260721P200000", "US.AAPL", near, 200, "PUT", -0.45, 4.0),
+            OptionQuote("US.AAPL260721P190000", "US.AAPL", near, 190, "PUT", -0.30, 2.0),
+            OptionQuote("US.AAPL260721P185000", "US.AAPL", near, 185, "PUT", -0.22, 1.5),
+        ],
+    }
+
+
+def _rich_broker(shares=0):
+    b = SimBroker(quotes={
+        "US.AAPL": 200.0,
+        "US.AAPL270412C180000": 30.0, "US.AAPL270412C195000": 20.0,
+        "US.AAPL260721C210000": 1.5,
+        "US.AAPL260721P200000": 4.0, "US.AAPL260721P190000": 2.0,
+        "US.AAPL260721P185000": 1.5,
+    }, cash=1_000_000, option_chains=_rich_chains())
+    if shares:
+        from autotrader.domain import OrderRequest
+        b.place_order(OrderRequest(symbol="US.AAPL", side="BUY", qty=shares,
+                                   order_type="MARKET", limit_price=None,
+                                   client_order_id="seed"))
+    return b
+
+
+def _cfgN(**over):
+    return _cfg(allowed_overlays=frozenset({
+        "COVERED_CALL", "PROTECTIVE_PUT", "COLLAR",
+        "BEAR_PUT_SPREAD", "CALL_DIAGONAL", "LEAP"}),
+        max_option_premium_per_trade=5000.0, option_default_contracts=1, **over)
+
+
+def test_bear_put_spread_places_both_legs(tmp_path):
+    b = _rich_broker(shares=0)
+    eng = _engine(b, _cfgN(), tmp_path)
+    res = eng.submit_external_signal(
+        Signal("US.AAPL", "SELL", 0.7, "bear put", overlay=OverlayType.BEAR_PUT_SPREAD))
+    assert res.action == "OVERLAY_PLACED", res
+    held = {p.symbol: p.qty for p in b.get_account().positions}
+    assert held["US.AAPL260721P200000"] == 1    # long higher-strike put
+    assert held["US.AAPL260721P185000"] == -1   # short lower-strike put
+
+
+def test_call_diagonal_places_both_legs(tmp_path):
+    b = _rich_broker(shares=0)
+    eng = _engine(b, _cfgN(), tmp_path)
+    res = eng.submit_external_signal(
+        Signal("US.AAPL", "SELL", 0.7, "pmcc", overlay=OverlayType.CALL_DIAGONAL))
+    assert res.action == "OVERLAY_PLACED", res
+    held = {p.symbol: p.qty for p in b.get_account().positions}
+    assert held["US.AAPL270412C180000"] == 1    # long LEAP call
+    assert held["US.AAPL260721C210000"] == -1   # short near call
+
+
+def test_leap_places_single_long_call(tmp_path):
+    b = _rich_broker(shares=0)
+    eng = _engine(b, _cfgN(), tmp_path)
+    res = eng.submit_external_signal(
+        Signal("US.AAPL", "SELL", 0.7, "leap", overlay=OverlayType.LEAP))
+    assert res.action == "OVERLAY_PLACED", res
+    held = {p.symbol: p.qty for p in b.get_account().positions}
+    assert held["US.AAPL270412C195000"] == 1
+
+
+def test_collar_places_long_put_and_short_call(tmp_path):
+    b = _rich_broker(shares=100)
+    eng = _engine(b, _cfgN(), tmp_path)
+    res = eng.submit_external_signal(
+        Signal("US.AAPL", "SELL", 0.7, "collar", overlay=OverlayType.COLLAR))
+    assert res.action == "OVERLAY_PLACED", res
+    held = {p.symbol: p.qty for p in b.get_account().positions}
+    assert held["US.AAPL260721P190000"] == 1    # long put
+    assert held["US.AAPL260721C210000"] == -1   # short call (share-covered)
+
+
+class _RejectShortBroker(SimBroker):
+    """Fills the long (BUY) leg, but REJECTS any short OPEN option leg — to
+    exercise the long-only safe residual path."""
+    def place_order(self, req):
+        if req.option is not None and req.side == "SELL" and req.position_effect == "OPEN":
+            self._seq += 1
+            from autotrader.domain import OrderAck, OrderState
+            return OrderAck(req.client_order_id, f"sim-{self._seq}", OrderState.REJECTED, {})
+        return super().place_order(req)
+
+
+def test_spread_short_leg_rejected_leaves_loud_long_residual(tmp_path):
+    b = _RejectShortBroker(quotes={
+        "US.AAPL": 200.0, "US.AAPL260721P200000": 4.0, "US.AAPL260721P185000": 1.5,
+    }, cash=1_000_000, option_chains=_rich_chains())
+    eng = _engine(b, _cfgN(), tmp_path)
+    res = eng.submit_external_signal(
+        Signal("US.AAPL", "SELL", 0.7, "bear put", overlay=OverlayType.BEAR_PUT_SPREAD))
+    assert res.action == "OVERLAY_RESIDUAL_LONG", res
+    held = {p.symbol: p.qty for p in b.get_account().positions}
+    assert held["US.AAPL260721P200000"] == 1            # long put filled
+    assert "US.AAPL260721P185000" not in held           # short put never opened
