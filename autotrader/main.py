@@ -493,6 +493,11 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
         reporter = EODReporter(db=db, webhook_url=slack_url,
                                trading_env=cfg.trading_env)
         logger.info("EOD Slack reporter enabled")
+    else:
+        # Loud about the disabled path: the 16:30 EOD_REPORT job is otherwise a
+        # silent no-op (runner guards on reporter is not None). Usually means
+        # config/secure.config was not sourced into the trader's env (RUNBOOK §4).
+        logger.info("EOD Slack reporter disabled (AUTOTRADER_SLACK_WEBHOOK_URL unset)")
     runner = SessionRunner(
         engine=engine, broker=broker, db=db, gate=gate,
         scheduler=LifecycleScheduler(), watchdog=watchdog, clock=Clock(),

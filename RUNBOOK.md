@@ -116,12 +116,15 @@ export FUTU_ACC_ID=<your SIMULATE acc_id>
 
 ```bash
 cd /path/to/AutoTrader
-set -a && source config/risk.config && set +a    # export all RISK_* vars
+set -a && source config/risk.config && set +a       # export all RISK_* vars
+set -a && source config/secure.config && set +a     # AUTOTRADER_SLACK_WEBHOOK_URL (EOD report) + secrets
 export FUTU_ACC_ID=<your SIMULATE acc_id>
-export ENTRY_PRICE=<your trigger price>           # avoid the 0 = buy-now default
+export ENTRY_PRICE=<your trigger price>             # avoid the 0 = buy-now default
 
 python3 -m autotrader.main
 ```
+
+> **EOD Slack report:** the end-of-day summary (§5, 16:30 ET) only posts if `AUTOTRADER_SLACK_WEBHOOK_URL` is in the trader's environment — it lives in `config/secure.config`, so you **must** source that file too (above). At startup the trader logs either `EOD Slack reporter enabled` or `EOD Slack reporter disabled (AUTOTRADER_SLACK_WEBHOOK_URL unset)` — check which you got.
 
 **Startup sequence** (logged to stdout): logs `TRADING_ENV=PAPER` → exponential-backoff **readiness gate** waits for OpenD (halts after `OPEND_READY_TIMEOUT`) → connects the broker → opens the SQLite projection → starts `SessionRunner.run()`. The process then runs continuously until you stop it (§8).
 
