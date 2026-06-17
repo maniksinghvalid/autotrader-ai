@@ -26,15 +26,8 @@ def evaluate(req: OrderRequest, snapshot: AccountSnapshot, cfg: RiskConfig,
              ref_price: Optional[float]) -> RiskDecision:
     sym = req.symbol.upper()
 
-    # Reduce-only exit: a SELL that strictly lowers an existing long position can
-    # never INCREASE risk, so the risk-increasing caps (daily-loss halt, order
-    # notional, gross exposure) are skipped for it. Env / stale / allow-list /
-    # long-only checks still apply. This lets the loss-halt flatten and strategy
-    # stop-loss exits liquidate even while the daily-loss limit is breached.
-    held = snapshot.position_qty(sym)
-    resulting = held + (req.qty if req.side == "BUY" else -req.qty)
-    is_reduce_only = req.side == "SELL" and 0 <= resulting < held
-
+    # Universal guards — apply to every order (equity and option) regardless of
+    # reduce-only status, so they run before any equity-specific setup.
     # 1. Environment routing — v1 is PAPER-only.
     if cfg.trading_env != "PAPER":
         return RiskDecision(False, f"env routing: {cfg.trading_env} not allowed in paper-only v1")
@@ -45,8 +38,18 @@ def evaluate(req: OrderRequest, snapshot: AccountSnapshot, cfg: RiskConfig,
 
     # Option legs follow their own rules (coverage, contracts, premium); the
     # equity long-only / notional / exposure caps below do not apply leg-by-leg.
+    # Placed before the equity reduce-only setup so that setup stays equity-only.
     if req.option is not None:
         return _evaluate_option_leg(req, snapshot, cfg, ref_price)
+
+    # Reduce-only exit: a SELL that strictly lowers an existing long position can
+    # never INCREASE risk, so the risk-increasing caps (daily-loss halt, order
+    # notional, gross exposure) are skipped for it. Env / stale / allow-list /
+    # long-only checks still apply. This lets the loss-halt flatten and strategy
+    # stop-loss exits liquidate even while the daily-loss limit is breached.
+    held = snapshot.position_qty(sym)
+    resulting = held + (req.qty if req.side == "BUY" else -req.qty)
+    is_reduce_only = req.side == "SELL" and 0 <= resulting < held
 
     # 3. Daily-loss halt — skipped for reduce-only exits.
     if not is_reduce_only and snapshot.day_pnl <= -abs(cfg.daily_loss_limit):
@@ -109,6 +112,9 @@ def _evaluate_option_leg(req: OrderRequest, snapshot: AccountSnapshot,
             return RiskDecision(False,
                                 f"uncovered short: held {held} < required {need} shares")
     else:
+        # O1 only OPENs (covered-call SELL OPEN, protective-put BUY OPEN). This debit-cost
+        # cap assumes a debit. CLOSE legs (buy-to-close / sell-to-close credits) need
+        # explicit handling in O4 — do not assume this formula is correct for CLOSE.
         cost = req.qty * premium * opt.multiplier
         if not math.isfinite(cost) or cost > cfg.max_option_premium_per_trade:
             return RiskDecision(False,

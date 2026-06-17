@@ -78,7 +78,7 @@ def test_option_underlying_not_in_allowlist_rejected():
 
 def test_option_blocked_when_contracts_cap_zero():
     d = evaluate(_call(qty=1), _snap(), _cfg(max_option_contracts=0), ref_price=1.5)
-    assert not d.approved
+    assert not d.approved and "contracts" in d.reason.lower()
 
 
 def test_option_rejected_on_stale_snapshot():
