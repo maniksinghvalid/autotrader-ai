@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import date
 from typing import TYPE_CHECKING, Optional
 
 from autotrader.broker import Broker
@@ -35,7 +36,7 @@ class TickResult:
 class TradeEngine:
     def __init__(self, broker: Broker, strategy: ThresholdStrategy, cfg: RiskConfig,
                  order_qty: int, audit_path: str, db: "Optional[DB]" = None,
-                 entry_gate: "Optional[EntryGate]" = None):
+                 entry_gate: "Optional[EntryGate]" = None, today_fn=None):
         self._b = broker
         self._strat = strategy
         self._cfg = cfg
@@ -44,6 +45,7 @@ class TradeEngine:
         self._signal_seq = 0
         self._db = db
         self._gate = entry_gate
+        self._today_fn = today_fn or date.today
 
     def tick(self) -> TickResult:
         if self._gate is not None and self._gate.halted:
@@ -79,6 +81,10 @@ class TradeEngine:
         if (signal.direction == "BUY" and self._gate is not None
                 and not self._gate.entries_enabled):
             return TickResult("ENTRY_CLOSED", signal.symbol)
+
+        # Option overlays expand into leg orders through this SAME audited path.
+        if signal.overlay is not None:
+            return self._route_overlay(signal, snap)
 
         if self._db:
             self._db.record_performance(
@@ -143,6 +149,50 @@ class TradeEngine:
         if signal.direction == "BUY" and self._cfg.trailing_stop_pct > 0:
             self._attach_trailing_stop(signal.symbol, eff_qty, price, signal_id)
         return TickResult("ORDER_PLACED", str(ack.broker_order_id))
+
+    def _route_overlay(self, signal: Signal, snap) -> TickResult:
+        """Expand an overlay signal into legs and place each through the audited
+        router. Legs are ordered long-before-short so a covered structure's hedge
+        is never momentarily naked. O1 overlays are single-leg; multi-leg
+        atomic-unwind on partial failure is O2."""
+        from autotrader.options.planner import build_overlay_plan, OverlayPlan
+
+        self._signal_seq += 1
+        signal_id = f"sig-{self._signal_seq}"
+        plan = build_overlay_plan(signal, snap, self._b, self._cfg,
+                                  signal_id, self._today_fn())
+        if not isinstance(plan, OverlayPlan):
+            logger.info("overlay skipped %s %s: %s",
+                        plan.overlay.value, plan.underlying, plan.reason)
+            return TickResult(plan.reason, f"{plan.overlay.value}:{plan.underlying}")
+
+        if self._db:
+            self._db.record_signal(
+                symbol=signal.symbol, direction=signal.direction,
+                confidence=signal.confidence,
+                rationale=f"{plan.overlay.value}: {signal.rationale}",
+                signal_id=signal_id)
+
+        last_boid = None
+        for leg in sorted(plan.legs, key=lambda l: 0 if l.request.side == "BUY" else 1):
+            req = leg.request
+            decision = evaluate(req, snap, self._cfg, ref_price=leg.quote.premium)
+            if not decision.approved:
+                logger.warning("overlay leg rejected (%s): %s", req.symbol, decision.reason)
+                return TickResult("REJECTED_BY_RISK", decision.reason)
+            ack = self._router.submit(req)
+            if self._db:
+                self._db.record_trade(
+                    client_order_id=ack.client_order_id, symbol=req.symbol,
+                    side=req.side, qty=req.qty, order_type=req.order_type,
+                    limit_price=leg.quote.premium, broker_order_id=ack.broker_order_id,
+                    state=ack.state.value)
+            if ack.state is OrderState.UNKNOWN:
+                return TickResult("ORDER_UNKNOWN", ack.client_order_id)
+            if ack.state is OrderState.REJECTED:
+                return TickResult("ORDER_REJECTED", ack.client_order_id)
+            last_boid = ack.broker_order_id
+        return TickResult("OVERLAY_PLACED", f"{plan.correlation_id}:{last_boid}")
 
     def _attach_trailing_stop(self, symbol: str, qty: int, ref_price: float,
                               entry_signal_id: str) -> None:
