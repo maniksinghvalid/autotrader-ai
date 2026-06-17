@@ -25,10 +25,37 @@ def test_every_registered_overlay_declares_legs():
         assert len(d.legs) >= 1
 
 
-def test_unsupported_overlays_absent_from_registry():
-    assert OverlayType.COLLAR not in REGISTRY
-    assert OverlayType.CALL_DIAGONAL not in REGISTRY
-    assert OverlayType.BEAR_PUT_SPREAD not in REGISTRY
+def test_phantom_strategies_now_registered():
+    for ov in (OverlayType.COLLAR, OverlayType.CALL_DIAGONAL,
+               OverlayType.BEAR_PUT_SPREAD, OverlayType.LEAP):
+        assert ov in REGISTRY
+
+
+def test_collar_is_long_put_then_short_call_single_expiry():
+    d = REGISTRY[OverlayType.COLLAR]
+    assert d.requires_underlying is True and d.single_expiry is True
+    assert [(l.right, l.side) for l in d.legs] == [("PUT", "BUY"), ("CALL", "SELL")]
+
+
+def test_bear_put_spread_is_long_then_short_put_single_expiry():
+    d = REGISTRY[OverlayType.BEAR_PUT_SPREAD]
+    assert d.requires_underlying is False and d.single_expiry is True
+    assert [(l.right, l.side) for l in d.legs] == [("PUT", "BUY"), ("PUT", "SELL")]
+    assert d.legs[0].target_delta == 0.45 and d.legs[1].target_delta == 0.25
+
+
+def test_call_diagonal_is_long_far_then_short_near_call():
+    d = REGISTRY[OverlayType.CALL_DIAGONAL]
+    assert d.requires_underlying is False and d.single_expiry is False
+    assert [(l.right, l.side) for l in d.legs] == [("CALL", "BUY"), ("CALL", "SELL")]
+    assert d.legs[0].dte_min == 180 and d.legs[1].dte_max == 45
+
+
+def test_leap_is_single_long_call():
+    d = REGISTRY[OverlayType.LEAP]
+    assert d.requires_underlying is False and len(d.legs) == 1
+    leg = d.legs[0]
+    assert leg.right == "CALL" and leg.side == "BUY" and leg.dte_min == 180
 
 
 def test_exit_rule_constructs_and_is_frozen():

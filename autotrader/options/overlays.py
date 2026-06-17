@@ -73,4 +73,37 @@ REGISTRY: Dict[OverlayType, OverlayDef] = {
         requires_underlying=True,
         legs=(LegSpec(right="PUT", side="BUY"),),
     ),
+    # Anchor leg (legs[0]) is always the covering LONG leg; it is selected first
+    # and submitted first. single_expiry pins later legs to the anchor's expiry.
+    OverlayType.COLLAR: OverlayDef(
+        requires_underlying=True,
+        single_expiry=True,
+        legs=(
+            LegSpec(right="PUT", side="BUY", target_delta=0.30, dte_min=30, dte_max=45),
+            LegSpec(right="CALL", side="SELL", target_delta=0.30, dte_min=30, dte_max=45),
+        ),
+    ),
+    OverlayType.BEAR_PUT_SPREAD: OverlayDef(
+        requires_underlying=False,
+        single_expiry=True,
+        legs=(
+            LegSpec(right="PUT", side="BUY", target_delta=0.45, dte_min=30, dte_max=45),
+            LegSpec(right="PUT", side="SELL", target_delta=0.25, dte_min=30, dte_max=45),
+        ),
+    ),
+    OverlayType.CALL_DIAGONAL: OverlayDef(
+        requires_underlying=False,
+        single_expiry=False,
+        legs=(
+            LegSpec(right="CALL", side="BUY", target_delta=0.80, dte_min=180, dte_max=365),
+            LegSpec(right="CALL", side="SELL", target_delta=0.30, dte_min=30, dte_max=45),
+        ),
+    ),
+    OverlayType.LEAP: OverlayDef(
+        requires_underlying=False,
+        single_expiry=False,
+        legs=(
+            LegSpec(right="CALL", side="BUY", target_delta=0.70, dte_min=180, dte_max=365),
+        ),
+    ),
 }
