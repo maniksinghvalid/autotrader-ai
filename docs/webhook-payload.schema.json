@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autotrader.local/webhook-payload.schema.json",
+  "description": "Body accepted by POST /webhook/sweep (autotrader.signals.webhook). Generated from the RoutineSignalPayload pydantic v2 model. NOTE: validation is lenient (extra/unknown fields are ignored, not rejected). Auth (X-Webhook-Token + X-Webhook-Signature HMAC-SHA256) and the body-size cap are enforced BEFORE schema validation and are not described here. direction UP->BUY / DOWN->SELL; confidence = |points_delta|/10 clamped to [0,1]. Optional per-change overlay selects an option strategy; the trader resolves the concrete contract locally.",
+  "$defs": {
+    "Catalyst": {
+      "properties": {
+        "ticker": {
+          "title": "Ticker",
+          "type": "string"
+        },
+        "event": {
+          "title": "Event",
+          "type": "string"
+        },
+        "date": {
+          "title": "Date",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "ticker",
+        "event",
+        "date",
+        "value"
+      ],
+      "title": "Catalyst",
+      "type": "object"
+    },
+    "SignalChange": {
+      "properties": {
+        "ticker": {
+          "title": "Ticker",
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "UP",
+            "DOWN"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "transition": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Transition",
+          "type": "array"
+        },
+        "points_delta": {
+          "title": "Points Delta",
+          "type": "integer"
+        },
+        "driver": {
+          "default": "",
+          "title": "Driver",
+          "type": "string"
+        },
+        "overlay": {
+          "anyOf": [
+            {"enum": ["COVERED_CALL", "PROTECTIVE_PUT", "COLLAR",
+                      "CALL_DIAGONAL", "BEAR_PUT_SPREAD"]},
+            {"type": "null"}
+          ],
+          "default": null,
+          "title": "Overlay",
+          "description": "Optional option-overlay intent; absent/null = plain equity. Contract (strike/expiry) is chosen locally by the trader (delta+DTE)."
+        }
+      },
+      "required": [
+        "ticker",
+        "direction",
+        "points_delta"
+      ],
+      "title": "SignalChange",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "routine_id": {
+      "title": "Routine Id",
+      "type": "string"
+    },
+    "timestamp": {
+      "format": "date-time",
+      "title": "Timestamp",
+      "type": "string"
+    },
+    "signal_changes": {
+      "items": {
+        "$ref": "#/$defs/SignalChange"
+      },
+      "title": "Signal Changes",
+      "type": "array"
+    },
+    "hard_stops": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "title": "Hard Stops",
+      "type": "object"
+    },
+    "catalysts": {
+      "items": {
+        "$ref": "#/$defs/Catalyst"
+      },
+      "title": "Catalysts",
+      "type": "array"
+    }
+  },
+  "required": [
+    "routine_id",
+    "timestamp",
+    "signal_changes"
+  ],
+  "title": "RoutineSignalPayload",
+  "type": "object"
+}

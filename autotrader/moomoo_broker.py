@@ -86,6 +86,79 @@ class MoomooBroker(Broker):
             return None
         return self._c.safe_float(self._c.safe_get(data.iloc[0], "last_price", default=0)) or None
 
+    def get_option_chain(self, underlying: str, right):  # pragma: no cover — live OpenD
+        """Live option chain for `underlying` (e.g. US.AAPL) and `right`
+        (CALL/PUT), returned as options.chain.OptionQuote rows.
+
+        All SDK/options imports are confined here — the module stays SDK-free at
+        import time (matches the existing lazy-import convention in this file).
+
+        Field names validated during the live paper smoke test; safe_get tolerates
+        the multiple candidate keys listed below in case SDK version changes them.
+        Vendored field names from get_option_chain.py: code, strike_price,
+        strike_time, last_price. Snapshot greeks: option_delta, option_strike_price,
+        option_expiry_date (alternatives kept as fallbacks)."""
+        from datetime import date as _date, datetime
+        from autotrader.options.chain import OptionQuote
+        from moomoo import OptionType  # confined import
+
+        opt_type = OptionType.CALL if str(right).upper() == "CALL" else OptionType.PUT
+        # start/end are optional per vendored script; pass a 90-day window so we
+        # get a useful range without flooding the response with far-dated expiries.
+        today = _date.today()
+        end_str = (today.replace(year=today.year + 1)
+                   if today.month <= 3 else today.replace(month=today.month - 3,
+                                                           year=today.year + 1)
+                   ).strftime("%Y-%m-%d")
+        # Simpler: just pass start today, end ~90 days out.
+        from datetime import timedelta
+        start_str = today.strftime("%Y-%m-%d")
+        end_str = (today + timedelta(days=90)).strftime("%Y-%m-%d")
+
+        ret, chain = self._quote.get_option_chain(
+            underlying, option_type=opt_type, start=start_str, end=end_str)
+        if not self._ok(ret) or self._c.is_empty(chain):
+            return []
+
+        # chain df has at least: code, name, option_type, strike_price,
+        # strike_time, last_price (per vendored get_option_chain.py columns).
+        codes = [str(self._c.safe_get(chain.iloc[i], "code", default=""))
+                 for i in range(len(chain))]
+        codes = [c for c in codes if c]
+        if not codes:
+            return []
+
+        sret, snap = self._quote.get_market_snapshot(codes)
+        if not self._ok(sret) or self._c.is_empty(snap):
+            return []
+
+        out = []
+        for i in range(len(snap)):
+            row = snap.iloc[i]
+            code = str(self._c.safe_get(row, "code", default=""))
+            # strike: snapshot may use option_strike_price or strike_price
+            strike = self._c.safe_float(self._c.safe_get(
+                row, "option_strike_price", "strike_price", "strike", default=0))
+            # expiry: snapshot may use option_expiry_date; chain used strike_time
+            exp = str(self._c.safe_get(
+                row, "option_expiry_date", "strike_time", "expiry_date", default=""))
+            try:
+                expiry = datetime.strptime(exp[:10], "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                continue
+            bid = self._c.safe_float(self._c.safe_get(row, "bid_price", "bid", default=0))
+            ask = self._c.safe_float(self._c.safe_get(row, "ask_price", "ask", default=0))
+            mid = (bid + ask) / 2 if (bid and ask) else self._c.safe_float(
+                self._c.safe_get(row, "last_price", "cur_price", default=0))
+            delta = self._c.safe_float(self._c.safe_get(
+                row, "option_delta", "delta", default=0))
+            if strike <= 0 or mid <= 0:
+                continue
+            out.append(OptionQuote(code=code, underlying=underlying, expiry=expiry,
+                                   strike=strike, right=str(right).upper(),
+                                   delta=delta, premium=mid))
+        return out
+
     # --- orders ----------------------------------------------------------
     def place_order(self, req: OrderRequest) -> OrderAck:
         if not self._order_rl.acquire(timeout=60.0):
