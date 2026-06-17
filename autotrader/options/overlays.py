@@ -16,7 +16,10 @@ class LegSpec:
     """One leg of an overlay, pre-contract-resolution. `ratio` is contracts per
     100 shares of underlying (1 = one contract per round lot). target_delta /
     dte_min / dte_max are per-leg selection overrides; when None the planner
-    falls back to the global config (cfg.option_target_delta / dte_min / dte_max)."""
+    falls back to the global config (cfg.option_target_delta / dte_min / dte_max).
+    target_delta uses the absolute-value convention: both puts and calls pass a
+    positive delta (e.g. 0.30 for a 30-delta put), mirroring the chain selector's
+    abs(delta) comparison."""
     right: OptionRight
     side: Side
     position_effect: PositionEffect = "OPEN"
@@ -41,6 +44,8 @@ class LegSpec:
             raise ValueError(f"LegSpec dte_min {self.dte_min} > dte_max {self.dte_max}")
         if self.dte_min is not None and self.dte_min < 0:
             raise ValueError(f"LegSpec.dte_min must be >= 0, got {self.dte_min}")
+        if self.dte_max is not None and self.dte_max < 0:
+            raise ValueError(f"LegSpec.dte_max must be >= 0, got {self.dte_max}")
 
 
 @dataclass(frozen=True)

@@ -63,6 +63,8 @@ def test_legspec_rejects_bad_target_delta():
     import pytest
     with pytest.raises(ValueError):
         LegSpec(right="CALL", side="BUY", target_delta=1.5)
+    with pytest.raises(ValueError):
+        LegSpec(right="CALL", side="BUY", target_delta=0.0)
 
 
 def test_legspec_rejects_inverted_dte():
