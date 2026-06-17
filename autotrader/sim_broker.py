@@ -6,7 +6,8 @@ from typing import Dict, List, Optional
 
 from autotrader.broker import Broker
 from autotrader.domain import (
-    AccountSnapshot, Fill, OrderAck, OrderRequest, OrderState, Position,
+    AccountSnapshot, Fill, OptionRight, OrderAck, OrderRequest, OrderState,
+    Position,
 )
 from autotrader.options.chain import OptionQuote
 
@@ -22,8 +23,8 @@ class SimBroker(Broker):
         self._acks_by_cid: Dict[str, OrderAck] = {}
         self._auto_fill = auto_fill
         self._seq = 0
-        # keyed by (underlying.upper(), right) -> List[OptionQuote]
-        self._chains = {(u.upper(), r): list(v)
+        # keyed by (underlying.upper(), right.upper()) -> List[OptionQuote]
+        self._chains = {(u.upper(), r.upper()): list(v)
                         for (u, r), v in (option_chains or {}).items()}
 
     def connect(self) -> None:
@@ -35,8 +36,8 @@ class SimBroker(Broker):
     def get_quote(self, symbol: str) -> Optional[float]:
         return self._quotes.get(symbol)
 
-    def get_option_chain(self, underlying: str, right: str) -> List[OptionQuote]:
-        return list(self._chains.get((underlying.upper(), right), []))
+    def get_option_chain(self, underlying: str, right: OptionRight) -> List[OptionQuote]:
+        return list(self._chains.get((underlying.upper(), right.upper()), []))
 
     def place_order(self, req: OrderRequest) -> OrderAck:
         if req.client_order_id in self._acks_by_cid:  # idempotency (R8)

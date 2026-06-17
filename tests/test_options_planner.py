@@ -28,3 +28,11 @@ def test_sim_broker_returns_seeded_chain():
 def test_sim_broker_unknown_chain_is_empty():
     b = SimBroker(quotes={"US.AAPL": 200.0})
     assert b.get_option_chain("US.AAPL", "PUT") == []
+
+
+def test_sim_broker_chain_lookup_is_case_insensitive_on_right():
+    b = SimBroker(quotes={"US.AAPL": 200.0},
+                  option_chains={("US.AAPL", "CALL"): _call_chain()})
+    # lowercase right still resolves (no silent empty)
+    assert [r.code for r in b.get_option_chain("us.aapl", "call")] == \
+        [q.code for q in _call_chain()]

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from autotrader.domain import AccountSnapshot, Fill, OrderAck, OrderRequest
+from autotrader.domain import AccountSnapshot, Fill, OptionRight, OrderAck, OrderRequest
 from autotrader.options.chain import OptionQuote
 
 
@@ -20,10 +20,11 @@ class Broker:
 
     def get_quote(self, symbol: str) -> Optional[float]: raise NotImplementedError
 
-    def get_option_chain(self, underlying: str, right: str) -> List["OptionQuote"]:
+    def get_option_chain(self, underlying: str, right: OptionRight) -> List["OptionQuote"]:
         """Return chain rows (strike/expiry/delta/premium) for one right.
         Live impl is MoomooBroker; base raises so a broker without it fails loud."""
         raise NotImplementedError
+
     def place_order(self, req: OrderRequest) -> OrderAck: raise NotImplementedError
     def cancel_order(self, broker_order_id: str) -> None: raise NotImplementedError
     def cancel_all(self) -> None: raise NotImplementedError
