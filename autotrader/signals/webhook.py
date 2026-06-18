@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import os
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -25,17 +27,49 @@ from autotrader.signals.schema import RoutineSignalPayload
 logger = logging.getLogger("autotrader.signals.webhook")
 
 _MAX_BODY_DEFAULT = 65536
+# 401s are written here (NOT the inbox root, so SignalInbox.poll() never consumes it).
+_AUTH_AUDIT_SUBDIR = "audit"
+_AUTH_AUDIT_FILE = "webhook-auth.jsonl"
+
+
+def _auth_failure_reason(secret: str, raw: bytes, token: Optional[str],
+                         signature: Optional[str]) -> Optional[str]:
+    """Return None when authenticated, else a short category naming which check
+    failed (for the audit log). Same constant-time comparisons as _verify; the
+    category does not leak more than the eventual 401 already does."""
+    if not secret:
+        return "server_secret_unset"
+    if not token:
+        return "missing_token"
+    if not signature:
+        return "missing_signature"
+    if not hmac.compare_digest(token, secret):
+        return "token_mismatch"
+    expected = "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return "bad_signature"
+    return None
 
 
 def _verify(secret: str, raw: bytes, token: Optional[str], signature: Optional[str]) -> bool:
     """Constant-time check: token must equal the secret AND signature must equal
     'sha256=' + HMAC-SHA256(secret, raw_body). Empty secret => always reject."""
-    if not secret or not token or not signature:
-        return False
-    if not hmac.compare_digest(token, secret):
-        return False
-    expected = "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(signature, expected)
+    return _auth_failure_reason(secret, raw, token, signature) is None
+
+
+def _audit_auth_failure(inbox_dir: Path, record: dict) -> None:
+    """Append one JSONL line (reason + caller metadata) for a rejected request to
+    <inbox>/audit/webhook-auth.jsonl. Best-effort: an audit failure must NEVER
+    break the security response, so errors are swallowed (logged only). Records
+    who/why — never the secret or the provided token/signature values."""
+    try:
+        audit_dir = inbox_dir / _AUTH_AUDIT_SUBDIR
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(record, separators=(",", ":"), ensure_ascii=False)
+        with open(audit_dir / _AUTH_AUDIT_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception as e:  # pragma: no cover — defensive; observability must not 500
+        logger.error("failed to write webhook auth audit: %s", e)
 
 
 def _atomic_write(dest_dir: Path, raw: bytes, prefix: str) -> Path:
@@ -80,10 +114,29 @@ def create_app(inbox_dir: str, secret: str, max_body: int = _MAX_BODY_DEFAULT) -
     @app.post("/webhook/sweep")
     def sweep():
         raw = request.get_data(cache=False)  # raw bytes — HMAC must match exactly
-        if not _verify(secret, raw,
-                       request.headers.get("X-Webhook-Token"),
-                       request.headers.get("X-Webhook-Signature")):
-            logger.warning("webhook auth failed from %s", request.remote_addr)
+        token = request.headers.get("X-Webhook-Token")
+        signature = request.headers.get("X-Webhook-Signature")
+        reason = _auth_failure_reason(secret, raw, token, signature)
+        if reason is not None:
+            # Persist who/why so a 401 is diagnosable from disk (terminal logs are
+            # ephemeral). forwarded_for/user_agent identify the real caller behind
+            # the ngrok proxy (e.g. PostmanRuntime vs the cloud routine).
+            forwarded_for = request.headers.get("X-Forwarded-For")
+            user_agent = request.headers.get("User-Agent")
+            _audit_auth_failure(inbox, {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "event": "webhook_auth_failure",
+                "reason": reason,
+                "remote_addr": request.remote_addr,
+                "forwarded_for": forwarded_for,
+                "user_agent": user_agent,
+                "token_present": bool(token),
+                "signature_present": bool(signature),
+                "body_bytes": len(raw),
+                "path": request.path,
+            })
+            logger.warning("webhook auth failed (%s) from %s (xff=%s, ua=%s)",
+                           reason, request.remote_addr, forwarded_for, user_agent)
             return jsonify({"error": "unauthorized"}), 401
         try:
             payload = RoutineSignalPayload.model_validate_json(raw)  # bad JSON or schema -> 400

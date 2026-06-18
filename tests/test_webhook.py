@@ -59,6 +59,55 @@ def test_bad_hmac_signature_is_401(tmp_path):
     assert c.post("/webhook/sweep", data=_BODY, headers=h).status_code == 401
 
 
+def _audit_lines(inbox):
+    p = inbox / "audit" / "webhook-auth.jsonl"
+    return [json.loads(l) for l in p.read_text().splitlines() if l.strip()] if p.exists() else []
+
+
+def test_missing_token_audit_reason_and_caller_metadata(tmp_path):
+    c, inbox = _client(tmp_path)
+    r = c.post("/webhook/sweep", data=_BODY, content_type="application/json",
+               headers={"User-Agent": "PostmanRuntime/7.37", "X-Forwarded-For": "203.0.113.9"})
+    assert r.status_code == 401
+    a = _audit_lines(inbox)
+    assert len(a) == 1
+    assert a[0]["reason"] == "missing_token"
+    assert a[0]["token_present"] is False
+    assert a[0]["user_agent"].startswith("PostmanRuntime")   # tells Postman from the routine
+    assert a[0]["forwarded_for"] == "203.0.113.9"            # real caller behind ngrok
+
+
+def test_wrong_token_audit_reason_never_logs_secret(tmp_path):
+    c, inbox = _client(tmp_path)
+    h = _headers(); h["X-Webhook-Token"] = "nope"
+    assert c.post("/webhook/sweep", data=_BODY, headers=h).status_code == 401
+    a = _audit_lines(inbox)[0]
+    assert a["reason"] == "token_mismatch"
+    assert a["token_present"] is True and a["signature_present"] is True
+    blob = json.dumps(a)
+    assert "nope" not in blob and _SECRET not in blob       # provided/real secret never persisted
+
+
+def test_bad_signature_audit_reason(tmp_path):
+    c, inbox = _client(tmp_path)
+    h = _headers(); h["X-Webhook-Signature"] = _sig(b"wrong-key", _BODY)
+    assert c.post("/webhook/sweep", data=_BODY, headers=h).status_code == 401
+    assert _audit_lines(inbox)[0]["reason"] == "bad_signature"
+
+
+def test_valid_request_writes_no_auth_audit(tmp_path):
+    c, inbox = _client(tmp_path)
+    assert c.post("/webhook/sweep", data=_BODY, headers=_headers()).status_code == 202
+    assert _audit_lines(inbox) == []
+
+
+def test_auth_audit_not_consumed_by_inbox(tmp_path):
+    c, inbox_path = _client(tmp_path)
+    c.post("/webhook/sweep", data=_BODY, content_type="application/json")  # 401 -> audit
+    assert _audit_lines(inbox_path)                       # audit line written
+    assert SignalInbox(str(inbox_path)).poll() == []      # but the trader never consumes it
+
+
 def test_valid_request_enqueues_and_returns_202(tmp_path):
     c, inbox = _client(tmp_path)
     r = c.post("/webhook/sweep", data=_BODY, headers=_headers())
