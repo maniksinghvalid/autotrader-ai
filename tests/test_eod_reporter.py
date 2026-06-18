@@ -218,3 +218,25 @@ def test_send_build_failure_does_not_raise(tmp_path):
     r.send_eod_report(_now())    # must NOT raise
     assert len(cap.calls) == 0   # never reached the POST
     db.close()
+
+
+def test_malformed_fill_renders_without_raising(tmp_path):
+    """An unparseable option-like symbol must not drop or raise — it is treated
+    as a stock leg under its own symbol and appears in the rendered output."""
+    db = DB(str(tmp_path / "r.db"))
+    db._conn.execute(
+        "INSERT INTO performance (date,day_pnl,total_assets,cash,gross_exposure,unrealized_pnl,updated_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (_DAY, 0.0, 100000.0, 100000.0, 0.0, 0.0, _DAY + "T20:30:00+00:00"))
+    # 26XX is an invalid date (month 33) — parse_option_code returns None for this symbol.
+    malformed = "US.AAPL26XXC1000"
+    db._conn.execute(
+        "INSERT INTO fills (fill_id,ts,symbol,side,qty,price) VALUES (?,?,?,?,?,?)",
+        ("m1", _DAY + "T14:00:00+00:00", malformed, "BUY", 5, 10.00))
+    db._conn.commit()
+    r = _reporter(db, lambda url, payload: 200)
+    # Must not raise
+    payload = r._render(r._gather(_now()))
+    # The fill must appear in the output (as symbol or underlying)
+    assert malformed in payload["text"] or "AAPL26XXC1000" in payload["text"]
+    db.close()

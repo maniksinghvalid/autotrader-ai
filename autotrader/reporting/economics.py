@@ -37,7 +37,8 @@ def compute_economics(legs: Sequence[Leg], basis: Optional[float]) -> StrategyEc
     cap = min((l.option.strike for l in short_calls), default=None)
     hedge_cost_pct = None
     if long_puts and basis:
-        hedge_cost_pct = long_puts[0].price / basis * 100.0
+        floor_put = min(long_puts, key=lambda l: l.option.strike)
+        hedge_cost_pct = floor_put.price / basis * 100.0
     return StrategyEconomics(
         net_premium=net_premium, floor=floor, cap=cap,
         floor_pct=_pct(floor, basis), cap_pct=_pct(cap, basis),
