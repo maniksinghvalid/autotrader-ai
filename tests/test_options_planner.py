@@ -243,3 +243,11 @@ def test_collar_skips_no_contract_when_window_empty():
     skip = build_overlay_plan(_sig(OverlayType.COLLAR), _snap(100), _rich_broker(),
                               _cfgN(), "s", _asof() + timedelta(days=400))
     assert isinstance(skip, OverlaySkip) and skip.reason == "SKIP_NO_CONTRACT"
+
+
+def test_existing_overlay_exit_falls_back_to_global_cfg():
+    plan = build_overlay_plan(_sig(OverlayType.COVERED_CALL), _snap(200),
+                              _broker(), _cfg(), "sig-x", _asof())
+    assert isinstance(plan, OverlayPlan)
+    assert plan.exit.dte_to_close == 7          # cfg.option_dte_to_close fallback
+    assert plan.exit.profit_target_pct == 0.5   # cfg.option_profit_target_pct fallback

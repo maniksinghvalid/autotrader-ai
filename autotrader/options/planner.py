@@ -11,7 +11,7 @@ from typing import Optional, Tuple, Union
 from autotrader.config import RiskConfig
 from autotrader.domain import AccountSnapshot, OrderRequest, OverlayType, Signal
 from autotrader.options.chain import OptionQuote, select_contract, to_contract
-from autotrader.options.overlays import ExitRule, REGISTRY
+from autotrader.options.overlays import ExitRule, REGISTRY, _UNSET
 from autotrader.router import OrderRouter
 
 
@@ -99,7 +99,7 @@ def build_overlay_plan(signal: Signal, snapshot: AccountSnapshot, chain_provider
         pin = anchor_expiry if (deff.single_expiry and i > 0) else None
         quotes = chain_provider.get_option_chain(underlying, spec.right, dte_min, dte_max)
         q = select_contract(quotes, spec.right, target_delta, dte_min, dte_max,
-                            asof, pin_expiry=pin)
+                            asof, pin_expiry=pin, prefer_longest=spec.prefer_longest)
         if q is None:
             return OverlaySkip(overlay, underlying, "SKIP_NO_CONTRACT")
         if i == 0:
@@ -119,6 +119,9 @@ def build_overlay_plan(signal: Signal, snapshot: AccountSnapshot, chain_provider
     if bad is not None:
         return OverlaySkip(overlay, underlying, bad)
 
-    exit_rule = ExitRule(dte_to_close=cfg.option_dte_to_close,
-                         profit_target_pct=cfg.option_profit_target_pct)
+    dtc = (deff.dte_to_close if deff.dte_to_close is not _UNSET
+           else cfg.option_dte_to_close)
+    ptp = (deff.profit_target_pct if deff.profit_target_pct is not _UNSET
+           else cfg.option_profit_target_pct)
+    exit_rule = ExitRule(dte_to_close=dtc, profit_target_pct=ptp)
     return OverlayPlan(overlay, underlying, tuple(legs), exit_rule, corr)
