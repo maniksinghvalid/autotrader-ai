@@ -228,3 +228,33 @@ def test_select_contract_pin_expiry_none_is_unchanged():
     a = date(2026, 6, 16)
     q = select_contract(_two_expiry_calls(), "CALL", 0.30, 0, 100, a)
     assert q.code == "C-NEAR"  # only the near one is inside a 0..100 DTE window
+
+
+def _asof_prefer_longest():
+    return date(2026, 6, 18)
+
+
+def _chain_prefer_longest():
+    a = _asof_prefer_longest()
+    # Two in-window expiries, both carrying an ~0.80-delta call.
+    return [
+        OptionQuote("NEAR80", "US.AAPL", a + timedelta(days=200), 180, "CALL", 0.80, 30.0),
+        OptionQuote("FAR80", "US.AAPL", a + timedelta(days=600), 175, "CALL", 0.80, 40.0),
+        OptionQuote("FAR70", "US.AAPL", a + timedelta(days=600), 190, "CALL", 0.70, 25.0),
+    ]
+
+
+def test_prefer_longest_picks_furthest_in_window_at_target_delta():
+    q = select_contract(_chain_prefer_longest(), "CALL", 0.80, 180, 730, _asof_prefer_longest(), prefer_longest=True)
+    assert q.code == "FAR80"
+
+
+def test_default_prefers_nearest_in_window():
+    q = select_contract(_chain_prefer_longest(), "CALL", 0.80, 180, 730, _asof_prefer_longest())
+    assert q.code == "NEAR80"
+
+
+def test_prefer_longest_still_respects_delta_closeness_first():
+    # FAR70 is further from 0.80 than FAR80; delta-closeness must dominate DTE.
+    q = select_contract(_chain_prefer_longest(), "CALL", 0.80, 180, 730, _asof_prefer_longest(), prefer_longest=True)
+    assert q.delta == 0.80
