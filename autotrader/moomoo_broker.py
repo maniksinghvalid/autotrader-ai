@@ -103,54 +103,75 @@ class MoomooBroker(Broker):
         from moomoo import OptionType  # confined import
 
         opt_type = OptionType.CALL if str(right).upper() == "CALL" else OptionType.PUT
-        # start/end are optional per vendored script; pass a 90-day window so we
-        # get a useful range without flooding the response with far-dated expiries.
+        # We want ~90 days of expiries, but get_option_chain rejects any request
+        # whose [start, end] span exceeds 30 days ("the requested time span cannot
+        # exceed 30 days"). Walk the horizon in <=30-day windows and aggregate, so
+        # one oversized request can't silently collapse the whole chain to empty.
         today = _date.today()
-        start_str = today.strftime("%Y-%m-%d")
-        end_str = (today + timedelta(days=90)).strftime("%Y-%m-%d")
-
-        ret, chain = self._quote.get_option_chain(
-            underlying, option_type=opt_type, start=start_str, end=end_str)
-        if not self._ok(ret) or self._c.is_empty(chain):
-            return []
-
-        # chain df has at least: code, name, option_type, strike_price,
-        # strike_time, last_price (per vendored get_option_chain.py columns).
-        codes = [str(self._c.safe_get(chain.iloc[i], "code", default=""))
-                 for i in range(len(chain))]
-        codes = [c for c in codes if c]
+        HORIZON_DAYS, WINDOW_DAYS = 90, 30
+        codes: List[str] = []
+        seen = set()
+        offset = 0
+        while offset < HORIZON_DAYS:
+            span = min(WINDOW_DAYS, HORIZON_DAYS - offset)
+            w_start = (today + timedelta(days=offset)).strftime("%Y-%m-%d")
+            w_end = (today + timedelta(days=offset + span)).strftime("%Y-%m-%d")
+            offset += span
+            ret, chain = self._quote.get_option_chain(
+                underlying, option_type=opt_type, start=w_start, end=w_end)
+            if not self._ok(ret) or self._c.is_empty(chain):
+                # A bad sub-window (error/empty) must not abort the others; the
+                # error payload is a str (not a df) when ret != RET_OK.
+                logger.info("get_option_chain %s %s %s..%s: ret=%s %s",
+                            underlying, str(right).upper(), w_start, w_end, ret,
+                            chain if isinstance(chain, str) else "empty")
+                continue
+            # chain df has at least: code, name, option_type, strike_price,
+            # strike_time, last_price (per vendored get_option_chain.py columns).
+            for i in range(len(chain)):
+                code = str(self._c.safe_get(chain.iloc[i], "code", default=""))
+                if code and code not in seen:
+                    seen.add(code)
+                    codes.append(code)
         if not codes:
             return []
 
-        sret, snap = self._quote.get_market_snapshot(codes)
-        if not self._ok(sret) or self._c.is_empty(snap):
-            return []
-
+        # get_market_snapshot is capped at 400 codes per call (API_LIMITS.md), and
+        # liquid names easily exceed that (AAPL ~768 puts), so batch the request.
+        SNAPSHOT_MAX = 400
         out = []
-        for i in range(len(snap)):
-            row = snap.iloc[i]
-            code = str(self._c.safe_get(row, "code", default=""))
-            # strike: snapshot may use option_strike_price or strike_price
-            strike = self._c.safe_float(self._c.safe_get(
-                row, "option_strike_price", "strike_price", "strike", default=0))
-            # expiry: snapshot may use option_expiry_date; chain used strike_time
-            exp = str(self._c.safe_get(
-                row, "option_expiry_date", "strike_time", "expiry_date", default=""))
-            try:
-                expiry = datetime.strptime(exp[:10], "%Y-%m-%d").date()
-            except (ValueError, TypeError):
+        for start in range(0, len(codes), SNAPSHOT_MAX):
+            batch = codes[start:start + SNAPSHOT_MAX]
+            sret, snap = self._quote.get_market_snapshot(batch)
+            if not self._ok(sret) or self._c.is_empty(snap):
+                logger.info("get_market_snapshot %s batch[%d:%d]: ret=%s %s",
+                            underlying, start, start + len(batch), sret,
+                            snap if isinstance(snap, str) else "empty")
                 continue
-            bid = self._c.safe_float(self._c.safe_get(row, "bid_price", "bid", default=0))
-            ask = self._c.safe_float(self._c.safe_get(row, "ask_price", "ask", default=0))
-            mid = (bid + ask) / 2 if (bid and ask) else self._c.safe_float(
-                self._c.safe_get(row, "last_price", "cur_price", default=0))
-            delta = self._c.safe_float(self._c.safe_get(
-                row, "option_delta", "delta", default=0))
-            if strike <= 0 or mid <= 0:
-                continue
-            out.append(OptionQuote(code=code, underlying=underlying, expiry=expiry,
-                                   strike=strike, right=str(right).upper(),
-                                   delta=delta, premium=mid))
+            for i in range(len(snap)):
+                row = snap.iloc[i]
+                code = str(self._c.safe_get(row, "code", default=""))
+                # strike: snapshot may use option_strike_price or strike_price
+                strike = self._c.safe_float(self._c.safe_get(
+                    row, "option_strike_price", "strike_price", "strike", default=0))
+                # expiry: snapshot may use option_expiry_date; chain used strike_time
+                exp = str(self._c.safe_get(
+                    row, "option_expiry_date", "strike_time", "expiry_date", default=""))
+                try:
+                    expiry = datetime.strptime(exp[:10], "%Y-%m-%d").date()
+                except (ValueError, TypeError):
+                    continue
+                bid = self._c.safe_float(self._c.safe_get(row, "bid_price", "bid", default=0))
+                ask = self._c.safe_float(self._c.safe_get(row, "ask_price", "ask", default=0))
+                mid = (bid + ask) / 2 if (bid and ask) else self._c.safe_float(
+                    self._c.safe_get(row, "last_price", "cur_price", default=0))
+                delta = self._c.safe_float(self._c.safe_get(
+                    row, "option_delta", "delta", default=0))
+                if strike <= 0 or mid <= 0:
+                    continue
+                out.append(OptionQuote(code=code, underlying=underlying, expiry=expiry,
+                                       strike=strike, right=str(right).upper(),
+                                       delta=delta, premium=mid))
         return out
 
     # --- orders ----------------------------------------------------------
