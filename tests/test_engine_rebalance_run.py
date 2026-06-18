@@ -52,7 +52,12 @@ def test_rebalance_skips_stale_snapshot(tmp_path):
     eng, db = _engine(tmp_path, broker, _cfg(target_staleness_hours=1.0),
                       EntryGate(enabled=True))
     db.upsert_target_weights("2026-06-16", [("US.AAPL", 100.0)])
-    later = NY_NOW + timedelta(hours=48)
+    # upsert stamps ingested_at with the real wall clock; pin it to the synthetic
+    # clock so staleness is measured against NY_NOW, not today's actual date
+    # (otherwise the fixed `later` below drifts relative to a moving ingest time).
+    db._conn.execute("UPDATE target_weights SET ingested_at=?", (NY_NOW.isoformat(),))
+    db._conn.commit()
+    later = NY_NOW + timedelta(hours=48)   # ingested 48h before `later`; staleness=1h
     assert eng.rebalance(later) == "STALE_TARGETS"
     db.close()
 
