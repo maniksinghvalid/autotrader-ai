@@ -166,6 +166,20 @@ def _rich_broker():
     return SimBroker(quotes={"US.AAPL": 200.0}, option_chains=_rich_chains())
 
 
+def _leap_chains():
+    a = _asof()
+    mid, far = a + timedelta(days=300), a + timedelta(days=600)  # both in 180-730
+    return {("US.AAPL", "CALL"): [
+        OptionQuote("US.AAPL_MID80", "US.AAPL", mid, 180, "CALL", 0.80, 30.0),
+        OptionQuote("US.AAPL_FAR80", "US.AAPL", far, 175, "CALL", 0.80, 40.0),
+        OptionQuote("US.AAPL_FAR70", "US.AAPL", far, 195, "CALL", 0.70, 25.0),
+    ]}
+
+
+def _leap_broker():
+    return SimBroker(quotes={"US.AAPL": 200.0}, option_chains=_leap_chains())
+
+
 def _cfgN(**over):
     # max_option_premium_per_trade is unused by the planner (risk_core enforces it); set for parity with the e2e config
     base = dict(allowed_overlays=frozenset({
@@ -210,14 +224,23 @@ def test_call_diagonal_plan_long_far_short_near_different_expiries():
     assert by_side["BUY"].request.option.expiry > by_side["SELL"].request.option.expiry
 
 
-def test_leap_plan_single_long_call_sized_by_default_contracts():
+def test_leap_plan_picks_longest_in_window_080_delta_call():
     plan = build_overlay_plan(_sig(OverlayType.LEAP), _snap(0),
-                              _rich_broker(), _cfgN(option_default_contracts=2), "s", _asof())
+                              _leap_broker(), _cfgN(option_default_contracts=2), "s", _asof())
     assert isinstance(plan, OverlayPlan)
     assert len(plan.legs) == 1
     leg = plan.legs[0].request
     assert leg.side == "BUY" and leg.option.right == "CALL"
-    assert leg.option.code == "US.AAPL270412C195000" and leg.qty == 2
+    assert leg.option.code == "US.AAPL_FAR80"   # 0.80 delta, furthest in window
+    assert leg.qty == 2                          # option_default_contracts
+
+
+def test_leap_exit_rule_rolls_at_120_no_profit_target():
+    plan = build_overlay_plan(_sig(OverlayType.LEAP), _snap(0),
+                              _leap_broker(), _cfgN(), "s", _asof())
+    assert isinstance(plan, OverlayPlan)
+    assert plan.exit.dte_to_close == 120
+    assert plan.exit.profit_target_pct is None
 
 
 def test_non_covered_strategy_sized_zero_is_disabled():

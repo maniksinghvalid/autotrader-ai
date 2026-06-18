@@ -108,8 +108,11 @@ REGISTRY: Dict[OverlayType, OverlayDef] = {
     OverlayType.LEAP: OverlayDef(
         requires_underlying=False,
         single_expiry=False,
+        dte_to_close=120,            # roll ~4 months out (below the 180 buy floor)
+        profit_target_pct=None,      # long stock-replacement: ride it
         legs=(
-            LegSpec(right="CALL", side="BUY", target_delta=0.70, dte_min=180, dte_max=365),
+            LegSpec(right="CALL", side="BUY", target_delta=0.80,
+                    dte_min=180, dte_max=730, prefer_longest=True),
         ),
     ),
 }

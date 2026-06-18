@@ -197,7 +197,7 @@ def test_leap_places_single_long_call(tmp_path):
         Signal("US.AAPL", "SELL", 0.7, "leap", overlay=OverlayType.LEAP))
     assert res.action == "OVERLAY_PLACED", res
     held = {p.symbol: p.qty for p in b.get_account().positions}
-    assert held["US.AAPL270412C195000"] == 1
+    assert held["US.AAPL270412C180000"] == 1
 
 
 def test_collar_places_long_put_and_short_call(tmp_path):
