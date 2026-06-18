@@ -11,6 +11,9 @@ from typing import Dict, Optional, Tuple
 from autotrader.domain import OptionRight, OverlayType, PositionEffect, Side
 
 
+_UNSET = object()  # "not overridden" marker; None is a valid explicit override
+
+
 @dataclass(frozen=True)
 class LegSpec:
     """One leg of an overlay, pre-contract-resolution. `ratio` is contracts per
@@ -27,6 +30,7 @@ class LegSpec:
     target_delta: Optional[float] = None
     dte_min: Optional[int] = None
     dte_max: Optional[int] = None
+    prefer_longest: bool = False
 
     def __post_init__(self):
         if self.right not in ("CALL", "PUT"):
@@ -53,7 +57,7 @@ class ExitRule:
     """Declared exit discipline (CLAUDE.md). Values sourced from config at plan
     time; ENFORCEMENT (the close scan) is O4 — O1 only records the declaration."""
     dte_to_close: int
-    profit_target_pct: float
+    profit_target_pct: Optional[float]
     close_on_reversal: bool = True
 
 
@@ -62,6 +66,8 @@ class OverlayDef:
     requires_underlying: bool
     legs: Tuple[LegSpec, ...]
     single_expiry: bool = False
+    dte_to_close: object = _UNSET          # int override, or _UNSET to use cfg
+    profit_target_pct: object = _UNSET     # float|None override, or _UNSET to use cfg
 
 
 REGISTRY: Dict[OverlayType, OverlayDef] = {
