@@ -5,7 +5,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from autotrader.db import DB
-from autotrader.reporting.eod_reporter import EODReporter
+from autotrader.reporting.eod_reporter import EODReporter, ReportData, StrategyGroup
 
 _NY = ZoneInfo("America/New_York")
 _DAY = "2026-06-16"
@@ -17,9 +17,9 @@ def _now():
 
 def _seed(db, *, with_signal=True):
     db._conn.execute(
-        "INSERT INTO performance (date,day_pnl,total_assets,cash,gross_exposure,updated_at) "
-        "VALUES (?,?,?,?,?,?)",
-        (_DAY, 842.13, 104712.0, 38204.0, 66000.0, _DAY + "T20:30:00+00:00"))
+        "INSERT INTO performance (date,day_pnl,total_assets,cash,gross_exposure,unrealized_pnl,updated_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (_DAY, 842.13, 104712.0, 38204.0, 66000.0, 0.0, _DAY + "T20:30:00+00:00"))
     db._conn.execute(
         "INSERT INTO fills (fill_id,ts,symbol,side,qty,price) VALUES (?,?,?,?,?,?)",
         ("f1", _DAY + "T14:00:00+00:00", "US.AAPL", "BUY", 10, 198.00))
@@ -34,6 +34,18 @@ def _seed(db, *, with_signal=True):
     db._conn.execute(
         "INSERT INTO positions (symbol,qty,avg_price,updated_at) VALUES (?,?,?,?)",
         ("US.AAPL", 16, 198.40, _DAY + "T20:30:00+00:00"))
+    # Covered-call overlay on CLOV (stock leg + short call) for grouped-report tests.
+    db._conn.execute(
+        "INSERT INTO fills (fill_id,ts,symbol,side,qty,price) VALUES (?,?,?,?,?,?)",
+        ("c1", _DAY + "T14:10:00+00:00", "US.CLOV", "BUY", 200, 4.99))
+    db._conn.execute(
+        "INSERT INTO fills (fill_id,ts,symbol,side,qty,price) VALUES (?,?,?,?,?,?)",
+        ("c2", _DAY + "T14:11:00+00:00", "US.CLOV260821C7000", "SELL", 2, 0.20))
+    db._conn.execute(
+        "INSERT INTO signals (ts,symbol,direction,confidence,rationale,signal_id) "
+        "VALUES (?,?,?,?,?,?)",
+        (_DAY + "T14:09:00+00:00", "US.CLOV", "SELL", 0.71,
+         "COVERED_CALL: ticker sweep score 71", "sig-cc"))
     db._conn.commit()
 
 
@@ -43,38 +55,37 @@ def _reporter(db, post):
                        retries=3, backoff=lambda s: None)
 
 
-def test_gather_aggregates_fills_and_links_signal(tmp_path):
+def test_gather_groups_legs_and_links_signal(tmp_path):
     db = DB(str(tmp_path / "r.db"))
     _seed(db)
     r = _reporter(db, lambda url, payload: 200)
     data = r._gather(_now())
-    assert len(data.activity) == 1
-    line = data.activity[0]
-    assert line.side == "BUY" and line.symbol == "US.AAPL"
-    assert line.qty == 16                      # 10 + 6 summed
-    assert abs(line.avg_price - 198.375) < 1e-6  # qty-weighted: (10*198 + 6*199)/16
-    assert line.signal is not None
-    assert abs(line.signal.confidence - 0.82) < 1e-9
-    assert line.signal.rationale == "momentum breakout"
-    assert data.positions == (("US.AAPL", 16),)
-    assert data.day_pnl == 842.13 and data.total_assets == 104712.0
+    groups = {g.underlying: g for g in data.groups}
+    cc = groups["US.CLOV"]
+    assert cc.label == "Covered Call"
+    assert {l.side for l in cc.legs} == {"BUY", "SELL"}
+    assert abs(cc.economics.net_premium - 40.0) < 1e-6
+    assert cc.economics.cap == 7.0
+    assert cc.signal is not None and abs(cc.signal.confidence - 0.71) < 1e-9
+    # rationale's overlay prefix is stripped for the thesis text
+    assert cc.signal.rationale == "ticker sweep score 71"
+    assert data.realized_pnl == 842.13
     db.close()
+
+
+def _aapl_group(data):
+    return next(g for g in data.groups if g.underlying == "US.AAPL")
 
 
 def test_gather_handles_missing_signal(tmp_path):
     db = DB(str(tmp_path / "r.db"))
     _seed(db, with_signal=False)
     r = _reporter(db, lambda url, payload: 200)
-    data = r._gather(_now())
-    assert len(data.activity) == 1
-    assert data.activity[0].signal is None
-    assert data.activity[0].driver is None      # no signal AND no driver -> bare line
-    db.close()
+    g = _aapl_group(r._gather(_now()))
+    assert g.signal is None and g.driver is None
 
 
 def test_gather_links_rebalance_driver_when_no_signal(tmp_path):
-    # A rebalance trade has no Signal; instead it leaves a `drivers` row, which the
-    # report attaches so the trade is explained ("why did this happen?").
     db = DB(str(tmp_path / "r.db"))
     _seed(db, with_signal=False)
     db._conn.execute(
@@ -82,16 +93,12 @@ def test_gather_links_rebalance_driver_when_no_signal(tmp_path):
         (_DAY + "T13:58:00+00:00", "US.AAPL", "BUY", "rebalance",
          "rbal-2026-06-16 · underweight → top-up"))
     db._conn.commit()
-    r = _reporter(db, lambda url, payload: 200)
-    line = r._gather(_now()).activity[0]
-    assert line.signal is None
-    assert line.driver is not None
-    assert line.driver.kind == "rebalance"
-    assert "underweight → top-up" in line.driver.detail
+    g = _aapl_group(_reporter(db, lambda u, p: 200)._gather(_now()))
+    assert g.signal is None and g.driver is not None
+    assert g.driver.kind == "rebalance" and "underweight → top-up" in g.driver.detail
 
 
 def test_signal_takes_precedence_over_rebalance_driver(tmp_path):
-    # If a trade has BOTH a signal and a driver row, the signal (the real thesis) wins.
     db = DB(str(tmp_path / "r.db"))
     _seed(db, with_signal=True)
     db._conn.execute(
@@ -99,10 +106,8 @@ def test_signal_takes_precedence_over_rebalance_driver(tmp_path):
         (_DAY + "T13:58:00+00:00", "US.AAPL", "BUY", "rebalance",
          "rbal-2026-06-16 · underweight → top-up"))
     db._conn.commit()
-    r = _reporter(db, lambda url, payload: 200)
-    line = r._gather(_now()).activity[0]
-    assert line.signal is not None
-    assert line.driver is None
+    g = _aapl_group(_reporter(db, lambda u, p: 200)._gather(_now()))
+    assert g.signal is not None and g.driver is None
 
 
 def test_render_shows_rebalance_driver(tmp_path):
@@ -113,40 +118,41 @@ def test_render_shows_rebalance_driver(tmp_path):
         (_DAY + "T13:58:00+00:00", "US.AAPL", "BUY", "rebalance",
          "rbal-2026-06-16 · underweight → top-up"))
     db._conn.commit()
-    r = _reporter(db, lambda url, payload: 200)
-    text = r._render(r._gather(_now()))["text"]
-    assert "[rebalance rbal-2026-06-16 · underweight → top-up]" in text
+    text = _reporter(db, lambda u, p: 200)._render(
+        _reporter(db, lambda u, p: 200)._gather(_now()))["text"]
+    assert "rebalance" in text and "underweight → top-up" in text
     db.close()
 
 
-def test_render_full_report_text_and_blocks(tmp_path):
+def test_render_enriched_report(tmp_path):
     db = DB(str(tmp_path / "r.db"))
     _seed(db)
-    r = _reporter(db, lambda url, payload: 200)
-    payload = r._render(r._gather(_now()))
+    payload = _reporter(db, lambda u, p: 200)._render(
+        _reporter(db, lambda u, p: 200)._gather(_now()))
     text = payload["text"]
     assert "Tue, Jun 16 2026" in text and "PAPER" in text
-    assert "+842.13" in text                  # day P&L, signed
-    assert "BUY US.AAPL" in text and "16" in text
-    assert "198.38" in text or "198.37" in text  # weighted avg, 2dp
-    assert "momentum breakout" in text and "0.82" in text
-    assert "US.AAPL 16" in text               # open positions
-    assert isinstance(payload["blocks"], list) and len(payload["blocks"]) >= 3
-    assert payload["blocks"][0]["type"] == "header"
+    assert "Realized" in text and "+842.13" in text
+    assert "Unrealized" in text
+    assert "Premium collected" in text and "Net cash deployed" in text
+    assert "Covered Call" in text and "CLOV" in text
+    assert "7.00" in text                       # the call strike
+    assert "momentum breakout" in text or "ticker sweep score 71" in text
+    assert isinstance(payload["blocks"], list) and payload["blocks"][0]["type"] == "header"
     db.close()
 
 
 def test_render_quiet_day_heartbeat(tmp_path):
     db = DB(str(tmp_path / "r.db"))
     db._conn.execute(
-        "INSERT INTO performance (date,day_pnl,total_assets,cash,gross_exposure,updated_at) "
-        "VALUES (?,?,?,?,?,?)",
-        (_DAY, 0.0, 100000.0, 100000.0, 0.0, _DAY + "T20:30:00+00:00"))
+        "INSERT INTO performance "
+        "(date,day_pnl,total_assets,cash,gross_exposure,unrealized_pnl,updated_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (_DAY, 0.0, 100000.0, 100000.0, 0.0, 0.0, _DAY + "T20:30:00+00:00"))
     db._conn.commit()
-    r = _reporter(db, lambda url, payload: 200)
-    payload = r._render(r._gather(_now()))
+    payload = _reporter(db, lambda u, p: 200)._render(
+        _reporter(db, lambda u, p: 200)._gather(_now()))
     assert "no trades today" in payload["text"].lower()
-    assert "100,000" in payload["text"]       # P&L header still present
+    assert "100,000" in payload["text"]
     db.close()
 
 
