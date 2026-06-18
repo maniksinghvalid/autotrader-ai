@@ -36,7 +36,10 @@ class SimBroker(Broker):
     def get_quote(self, symbol: str) -> Optional[float]:
         return self._quotes.get(symbol)
 
-    def get_option_chain(self, underlying: str, right: OptionRight) -> List[OptionQuote]:
+    def get_option_chain(self, underlying: str, right: OptionRight,
+                         dte_min: int = 0, dte_max: int = 100000) -> List[OptionQuote]:
+        # Window args accepted for interface parity; the precise DTE filter runs
+        # in select_contract over the canned chain.
         return list(self._chains.get((underlying.upper(), right.upper()), []))
 
     def place_order(self, req: OrderRequest) -> OrderAck:

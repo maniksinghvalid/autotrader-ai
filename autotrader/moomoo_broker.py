@@ -41,6 +41,26 @@ _STATUS_MAP = {
 }
 
 
+def _chain_windows(expiries, today, dte_min, dte_max, max_span=30):
+    """Group expiries that fall within [today+dte_min, today+dte_max] into
+    <=max_span-day (start, end) windows, so each get_option_chain call stays
+    under the 30-day span cap while covering only real expiries (not blank
+    calendar). Pure: no SDK, importable without OpenD."""
+    from datetime import date as _date  # noqa: F401 — typing clarity only
+    qualifying = sorted(e for e in expiries
+                        if dte_min <= (e - today).days <= dte_max)
+    windows = []
+    i = 0
+    while i < len(qualifying):
+        start = qualifying[i]
+        j = i
+        while j + 1 < len(qualifying) and (qualifying[j + 1] - start).days <= max_span:
+            j += 1
+        windows.append((start, qualifying[j]))
+        i = j + 1
+    return windows
+
+
 class MoomooBroker(Broker):
     def __init__(self, acc_id: Optional[int] = None):
         self._c = _load_common()
@@ -86,48 +106,51 @@ class MoomooBroker(Broker):
             return None
         return self._c.safe_float(self._c.safe_get(data.iloc[0], "last_price", default=0)) or None
 
-    def get_option_chain(self, underlying: str, right):  # pragma: no cover — live OpenD
+    def get_option_chain(self, underlying: str, right,
+                         dte_min: int = 0, dte_max: int = 100000):  # pragma: no cover — live OpenD
         """Live option chain for `underlying` (e.g. US.AAPL) and `right`
-        (CALL/PUT), returned as options.chain.OptionQuote rows.
+        (CALL/PUT), restricted to expiries in [today+dte_min, today+dte_max],
+        returned as options.chain.OptionQuote rows.
 
-        All SDK/options imports are confined here — the module stays SDK-free at
-        import time (matches the existing lazy-import convention in this file).
-
-        Field names validated during the live paper smoke test; safe_get tolerates
-        the multiple candidate keys listed below in case SDK version changes them.
-        Vendored field names from get_option_chain.py: code, strike_price,
-        strike_time, last_price. Snapshot greeks: option_delta, option_strike_price,
-        option_expiry_date (alternatives kept as fallbacks)."""
-        from datetime import date as _date, datetime, timedelta
+        get_option_chain rejects any [start, end] span > 30 days, so we enumerate
+        expiries once via get_option_expiration_date (no span limit), keep only
+        those in the DTE window, and fetch the chain per <=30-day expiry bucket.
+        All SDK/options imports are confined here (module stays SDK-free at import).
+        Field names per vendored get_option_chain.py / get_option_expiration_date.py;
+        safe_get tolerates the candidate keys below across SDK versions."""
+        from datetime import date as _date, datetime
         from autotrader.options.chain import OptionQuote
         from moomoo import OptionType  # confined import
 
         opt_type = OptionType.CALL if str(right).upper() == "CALL" else OptionType.PUT
-        # We want ~90 days of expiries, but get_option_chain rejects any request
-        # whose [start, end] span exceeds 30 days ("the requested time span cannot
-        # exceed 30 days"). Walk the horizon in <=30-day windows and aggregate, so
-        # one oversized request can't silently collapse the whole chain to empty.
         today = _date.today()
-        HORIZON_DAYS, WINDOW_DAYS = 90, 30
+
+        eret, edf = self._quote.get_option_expiration_date(underlying)
+        if not self._ok(eret) or self._c.is_empty(edf):
+            logger.info("get_option_expiration_date %s: ret=%s %s", underlying, eret,
+                        edf if isinstance(edf, str) else "empty")
+            return []
+        expiries = []
+        for i in range(len(edf)):
+            s = str(self._c.safe_get(edf.iloc[i], "strike_time", "expiry_date", default=""))
+            try:
+                expiries.append(datetime.strptime(s[:10], "%Y-%m-%d").date())
+            except (ValueError, TypeError):
+                continue
+
         codes: List[str] = []
         seen = set()
-        offset = 0
-        while offset < HORIZON_DAYS:
-            span = min(WINDOW_DAYS, HORIZON_DAYS - offset)
-            w_start = (today + timedelta(days=offset)).strftime("%Y-%m-%d")
-            w_end = (today + timedelta(days=offset + span)).strftime("%Y-%m-%d")
-            offset += span
+        for w_start, w_end in _chain_windows(expiries, today, dte_min, dte_max):
             ret, chain = self._quote.get_option_chain(
-                underlying, option_type=opt_type, start=w_start, end=w_end)
+                underlying, option_type=opt_type,
+                start=w_start.strftime("%Y-%m-%d"), end=w_end.strftime("%Y-%m-%d"))
             if not self._ok(ret) or self._c.is_empty(chain):
-                # A bad sub-window (error/empty) must not abort the others; the
-                # error payload is a str (not a df) when ret != RET_OK.
+                # A bad sub-window must not abort the others; the error payload is
+                # a str (not a df) when ret != RET_OK.
                 logger.info("get_option_chain %s %s %s..%s: ret=%s %s",
                             underlying, str(right).upper(), w_start, w_end, ret,
                             chain if isinstance(chain, str) else "empty")
                 continue
-            # chain df has at least: code, name, option_type, strike_price,
-            # strike_time, last_price (per vendored get_option_chain.py columns).
             for i in range(len(chain)):
                 code = str(self._c.safe_get(chain.iloc[i], "code", default=""))
                 if code and code not in seen:
@@ -151,10 +174,8 @@ class MoomooBroker(Broker):
             for i in range(len(snap)):
                 row = snap.iloc[i]
                 code = str(self._c.safe_get(row, "code", default=""))
-                # strike: snapshot may use option_strike_price or strike_price
                 strike = self._c.safe_float(self._c.safe_get(
                     row, "option_strike_price", "strike_price", "strike", default=0))
-                # expiry: snapshot may use option_expiry_date; chain used strike_time
                 exp = str(self._c.safe_get(
                     row, "option_expiry_date", "strike_time", "expiry_date", default=""))
                 try:

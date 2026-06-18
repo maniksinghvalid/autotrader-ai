@@ -97,7 +97,7 @@ def build_overlay_plan(signal: Signal, snapshot: AccountSnapshot, chain_provider
         dte_min = spec.dte_min if spec.dte_min is not None else cfg.option_dte_min
         dte_max = spec.dte_max if spec.dte_max is not None else cfg.option_dte_max
         pin = anchor_expiry if (deff.single_expiry and i > 0) else None
-        quotes = chain_provider.get_option_chain(underlying, spec.right)
+        quotes = chain_provider.get_option_chain(underlying, spec.right, dte_min, dte_max)
         q = select_contract(quotes, spec.right, target_delta, dte_min, dte_max,
                             asof, pin_expiry=pin)
         if q is None:

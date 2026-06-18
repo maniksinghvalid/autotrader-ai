@@ -20,9 +20,11 @@ class Broker:
 
     def get_quote(self, symbol: str) -> Optional[float]: raise NotImplementedError
 
-    def get_option_chain(self, underlying: str, right: OptionRight) -> List["OptionQuote"]:
-        """Return chain rows (strike/expiry/delta/premium) for one right.
-        Live impl is MoomooBroker; base raises so a broker without it fails loud."""
+    def get_option_chain(self, underlying: str, right: OptionRight,
+                         dte_min: int = 0, dte_max: int = 100000) -> List["OptionQuote"]:
+        """Return chain rows (strike/expiry/delta/premium) for one right, limited
+        to expiries within [today+dte_min, today+dte_max]. Live impl is
+        MoomooBroker; base raises so a broker without it fails loud."""
         raise NotImplementedError
 
     def place_order(self, req: OrderRequest) -> OrderAck: raise NotImplementedError
