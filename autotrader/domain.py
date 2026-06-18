@@ -162,6 +162,7 @@ class AccountSnapshot:
     total_assets: float
     day_pnl: float
     stale: bool
+    unrealized_pnl: float = 0.0
     positions: Tuple[Position, ...] = ()
 
     def position_qty(self, symbol: str) -> int:

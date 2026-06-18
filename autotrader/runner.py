@@ -45,7 +45,8 @@ class SessionRunner:
     def _record_perf(self) -> None:
         snap = self._broker.get_account()
         self._db.record_performance(snap.day_pnl, snap.total_assets,
-                                    snap.cash, snap.gross_exposure())
+                                    snap.cash, snap.gross_exposure(),
+                                    snap.unrealized_pnl)
 
     def _run_job(self, job: str, now) -> None:
         if job == PRE_OPEN_SYNC:

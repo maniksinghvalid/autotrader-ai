@@ -270,16 +270,18 @@ class MoomooBroker(Broker):
         cash = self._c.safe_float(self._c.safe_get(acc.iloc[0], "cash", "avl_withdrawal_cash", default=0))
         total = self._c.safe_float(self._c.safe_get(acc.iloc[0], "total_assets", default=0))
         pnl = self._c.safe_float(self._c.safe_get(acc.iloc[0], "realized_pl", "today_pnl_value", default=0))
+        upnl = self._c.safe_float(self._c.safe_get(acc.iloc[0], "unrealized_pl", default=0))
         positions = self._positions()
         if positions is None:
             # Position query FAILED — never present a falsely-flat snapshot the
             # risk core would trust. Mark stale so it refuses to trade (E1/R7).
             return AccountSnapshot(cash=cash, total_assets=total, day_pnl=pnl,
-                                   stale=True, positions=())
+                                   stale=True, unrealized_pnl=upnl, positions=())
         # A genuinely empty account with zero assets is also treated as stale.
         stale = (total == 0 and not positions)
         return AccountSnapshot(cash=cash, total_assets=total, day_pnl=pnl,
-                               stale=stale, positions=tuple(positions))
+                               stale=stale, unrealized_pnl=upnl,
+                               positions=tuple(positions))
 
     def _positions(self) -> Optional[List[Position]]:
         """Return current positions, or None if the position query FAILED.

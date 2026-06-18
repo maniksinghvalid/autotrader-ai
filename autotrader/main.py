@@ -92,6 +92,7 @@ class TradeEngine:
                 total_assets=snap.total_assets,
                 cash=snap.cash,
                 gross_exposure=snap.gross_exposure(),
+                unrealized_pnl=snap.unrealized_pnl,
             )
 
         self._signal_seq += 1
@@ -406,7 +407,8 @@ class TradeEngine:
         if self._db:
             self._db.record_performance(
                 day_pnl=snap.day_pnl, total_assets=snap.total_assets,
-                cash=snap.cash, gross_exposure=snap.gross_exposure())
+                cash=snap.cash, gross_exposure=snap.gross_exposure(),
+                unrealized_pnl=snap.unrealized_pnl)
         if action is RiskAction.GATE:
             if self._gate is not None:
                 self._gate.close()

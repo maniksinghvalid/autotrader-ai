@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS performance (
     total_assets   REAL NOT NULL,
     cash           REAL NOT NULL,
     gross_exposure REAL NOT NULL,
+    unrealized_pnl REAL NOT NULL DEFAULT 0,
     updated_at     TEXT NOT NULL
 );
 
@@ -116,6 +117,10 @@ class DB:
         db_dir.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.executescript(_SCHEMA)
+        cols = [r[1] for r in self._conn.execute("PRAGMA table_info(performance)")]
+        if "unrealized_pnl" not in cols:
+            self._conn.execute(
+                "ALTER TABLE performance ADD COLUMN unrealized_pnl REAL NOT NULL DEFAULT 0")
         self._conn.commit()
         self._lock = threading.Lock()
 
@@ -204,13 +209,15 @@ class DB:
             self._conn.commit()
 
     def record_performance(self, day_pnl: float, total_assets: float,
-                           cash: float, gross_exposure: float) -> None:
+                           cash: float, gross_exposure: float,
+                           unrealized_pnl: float = 0.0) -> None:
         with self._lock:
             self._conn.execute(
                 "INSERT OR REPLACE INTO performance "
-                "(date,day_pnl,total_assets,cash,gross_exposure,updated_at) "
-                "VALUES (?,?,?,?,?,?)",
-                (_today(), day_pnl, total_assets, cash, gross_exposure, _now()),
+                "(date,day_pnl,total_assets,cash,gross_exposure,unrealized_pnl,updated_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (_today(), day_pnl, total_assets, cash, gross_exposure,
+                 unrealized_pnl, _now()),
             )
             self._conn.commit()
 
