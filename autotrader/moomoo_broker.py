@@ -46,7 +46,6 @@ def _chain_windows(expiries, today, dte_min, dte_max, max_span=30):
     <=max_span-day (start, end) windows, so each get_option_chain call stays
     under the 30-day span cap while covering only real expiries (not blank
     calendar). Pure: no SDK, importable without OpenD."""
-    from datetime import date as _date  # noqa: F401 — typing clarity only
     qualifying = sorted(e for e in expiries
                         if dte_min <= (e - today).days <= dte_max)
     windows = []
