@@ -22,6 +22,17 @@ from autotrader.signals.schema import RoutineSignalPayload, SignalChange
 logger = logging.getLogger("autotrader.signals.normalize")
 
 _DIRECTION = {"UP": "BUY", "DOWN": "SELL"}
+_OVERLAY_TRANSITIONS = {"HEDGE", "INCOME", "BULLISH"}
+
+
+def _overlay_intended(change: SignalChange) -> bool:
+    """True if the change signals an options-overlay instruction — by the driver
+    marker the producer appends ("... (options overlay)") or by a transition whose
+    target is an overlay state. Such a change MUST carry an `overlay` enum; if it
+    does not, it is malformed and must not be routed as a plain equity order."""
+    if "overlay" in (change.driver or "").lower():
+        return True
+    return bool(change.transition) and change.transition[-1].upper() in _OVERLAY_TRANSITIONS
 
 
 def _normalize_symbol(ticker: str) -> str:
@@ -59,6 +70,14 @@ def normalize_payload(payload: RoutineSignalPayload,
             stops[_normalize_symbol(raw_key)] = float(value)
         else:
             logger.warning("dropping invalid hard_stop for %s: %r", raw_key, value)
-    return [normalize_change(c, confidence_scale,
-                             stops.get(_normalize_symbol(c.ticker)))
-            for c in payload.signal_changes]
+    signals = []
+    for c in payload.signal_changes:
+        if _overlay_intended(c) and not c.overlay:
+            logger.warning(
+                "DROPPED overlay-intended signal with no overlay enum: %s %s "
+                "transition=%s driver=%r — refusing to route as a plain order",
+                c.ticker, c.direction, c.transition, c.driver)
+            continue
+        signals.append(normalize_change(c, confidence_scale,
+                                        stops.get(_normalize_symbol(c.ticker))))
+    return signals
