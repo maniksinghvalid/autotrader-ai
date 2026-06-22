@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 import math
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from types import MappingProxyType
@@ -13,6 +14,12 @@ Side = Literal["BUY", "SELL"]
 OrderType = Literal["MARKET", "LIMIT", "TRAILING_STOP"]
 OptionRight = Literal["CALL", "PUT"]
 PositionEffect = Literal["OPEN", "CLOSE"]
+
+# Suffix of a moomoo option code after the underlying prefix, e.g. for
+# "US.AAPL260717C210000" after stripping "US.AAPL" → "260717C210000".
+# Group 1 is "C" or "P". The leading \d{6} also guards prefix collisions
+# (US.OXY…'s residual "XY26…" fails to match, so it is not counted for US.O).
+_OPT_SUFFIX_RE = re.compile(r"^\d{6}([CP])\d+$")
 
 
 class OverlayType(enum.Enum):
@@ -170,6 +177,22 @@ class AccountSnapshot:
             if p.symbol == symbol:
                 return p.qty
         return 0
+
+    def short_option_contracts(self, underlying: str, right: str) -> int:
+        """Total open SHORT option contracts (sum of -qty over negative-qty
+        positions) on `underlying` for the given right ("CALL"/"PUT"), parsed
+        from moomoo option codes (e.g. US.AAPL260717C210000). Used both to
+        reserve shares pledged to covered calls (so a trim never strips cover)
+        and to bound stacked covered shorts in the risk core."""
+        want = "C" if right == "CALL" else "P"
+        total = 0
+        for p in self.positions:
+            if p.qty >= 0 or not p.symbol.startswith(underlying):
+                continue
+            m = _OPT_SUFFIX_RE.match(p.symbol[len(underlying):])
+            if m and m.group(1) == want:
+                total += -p.qty
+        return total
 
     def gross_exposure(self) -> float:
         return sum(abs(p.qty) * p.avg_price for p in self.positions)

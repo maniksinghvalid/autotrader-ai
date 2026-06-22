@@ -4,17 +4,11 @@ reach place_order except through an approved decision here (research §4.3)."""
 from __future__ import annotations
 
 import math
-import re
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from autotrader.config import RiskConfig
 from autotrader.domain import AccountSnapshot, OrderRequest
-
-# Matches the suffix of a moomoo option code after the underlying prefix:
-# e.g. for "US.AAPL260717C210000" after stripping "US.AAPL" → "260717C210000"
-# Group 1 is "C" or "P".
-_OPT_SUFFIX = re.compile(r"^\d{6}([CP])\d+$")
 
 # Credit-leg sizing assumes a 200% stop-loss (buy-to-close at 3x entry) => max loss
 # is this multiple of the premium collected. The stop itself is enforced in O4.
@@ -22,18 +16,9 @@ _CREDIT_STOP_LOSS_MULTIPLE = 2.0
 
 
 def _short_option_contracts(snapshot, underlying: str, right: str) -> int:
-    """Total short contracts already open on `underlying` for the given right
-    (CALL/PUT), parsed from moomoo option codes (e.g. US.AAPL260717C210000).
-    Used to ensure stacked covered calls never become an aggregate naked short."""
-    want = "C" if right == "CALL" else "P"
-    total = 0
-    for p in snapshot.positions:
-        if p.qty >= 0 or not p.symbol.startswith(underlying):
-            continue
-        m = _OPT_SUFFIX.match(p.symbol[len(underlying):])
-        if m and m.group(1) == want:
-            total += -p.qty
-    return total
+    """Open short contracts on `underlying` for the given right. Delegates to
+    AccountSnapshot.short_option_contracts — the single source of truth."""
+    return snapshot.short_option_contracts(underlying, right)
 
 
 def _long_cover_contracts(coverage_legs, opt) -> int:

@@ -95,3 +95,42 @@ def test_non_trailing_order_defaults_trail_percent_to_none():
     r = OrderRequest(symbol="US.AAPL", side="BUY", qty=1, order_type="MARKET",
                      limit_price=None, client_order_id="m")
     assert r.trail_percent is None
+
+
+def test_short_option_contracts_counts_short_calls_only():
+    from autotrader.domain import AccountSnapshot, Position
+    snap = AccountSnapshot(
+        cash=0.0, total_assets=0.0, day_pnl=0.0, stale=False,
+        positions=(
+            Position("US.AAPL", 100, 190.0),                 # long stock — ignored
+            Position("US.AAPL260821C200000", -2, 3.0),       # short call ×2 — counts
+            Position("US.AAPL260821C210000", 1, 1.0),        # long call — ignored
+            Position("US.AAPL260821P180000", -1, 2.0),       # short put — not a CALL
+            Position("US.MSFT260821C400000", -5, 4.0),       # other underlying — ignored
+        ),
+    )
+    assert snap.short_option_contracts("US.AAPL", "CALL") == 2
+    assert snap.short_option_contracts("US.AAPL", "PUT") == 1
+    assert snap.short_option_contracts("US.AAPL", "CALL") == 2  # idempotent / no mutation
+
+
+def test_short_option_contracts_zero_when_none():
+    from autotrader.domain import AccountSnapshot, Position
+    snap = AccountSnapshot(cash=0.0, total_assets=0.0, day_pnl=0.0, stale=False,
+                           positions=(Position("US.AAPL", 100, 190.0),))
+    assert snap.short_option_contracts("US.AAPL", "CALL") == 0
+
+
+def test_short_option_contracts_no_prefix_collision():
+    # "US.O" must NOT count "US.OXY" options: the residual "XY26…" fails the
+    # ^\d{6}[CP]\d+$ suffix regex.
+    from autotrader.domain import AccountSnapshot, Position
+    snap = AccountSnapshot(
+        cash=0.0, total_assets=0.0, day_pnl=0.0, stale=False,
+        positions=(
+            Position("US.O260821C50000", -1, 1.0),     # US.O short call ×1
+            Position("US.OXY260821C50000", -3, 2.0),   # US.OXY short call — must not count for US.O
+        ),
+    )
+    assert snap.short_option_contracts("US.O", "CALL") == 1
+    assert snap.short_option_contracts("US.OXY", "CALL") == 3
