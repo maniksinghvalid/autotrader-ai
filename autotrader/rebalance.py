@@ -12,6 +12,8 @@ from typing import Dict, FrozenSet, Tuple
 from autotrader.config import RiskConfig
 from autotrader.domain import AccountSnapshot
 
+SHARES_PER_CONTRACT = 100   # US equity option multiplier (domain default)
+
 
 @dataclass(frozen=True)
 class RebalanceTrade:
@@ -83,6 +85,14 @@ def compute_plan(snapshot: AccountSnapshot, scores: Dict[str, float],
             qty = min(qty, current_qty)
             if qty <= 0:
                 skipped.append((symbol, "WITHIN_BAND"))
+                continue
+            # Reserve shares pledged to open short calls (covered call / collar):
+            # never trim below the covered floor, or the short call goes naked.
+            covered_floor = (snapshot.short_option_contracts(symbol, "CALL")
+                             * SHARES_PER_CONTRACT)
+            qty = min(qty, max(0, current_qty - covered_floor))
+            if qty <= 0:
+                skipped.append((symbol, "COVERED_FLOOR"))
                 continue
             if qty * price < cfg.rebalance_min_notional:
                 skipped.append((symbol, "SKIPPED_MIN_NOTIONAL"))
