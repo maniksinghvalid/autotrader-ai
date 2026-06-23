@@ -66,6 +66,7 @@ def compute_plan(snapshot: AccountSnapshot, scores: Dict[str, float],
     if total <= 0:
         return RebalancePlan((), tuple((s, "NO_EQUITY") for s in fractions))
 
+    running_gross = snapshot.gross_exposure()
     for symbol in sorted(fractions):
         target_weight = fractions[symbol]
         price = prices.get(symbol)
@@ -104,10 +105,23 @@ def compute_plan(snapshot: AccountSnapshot, scores: Dict[str, float],
             if qty <= 0:
                 skipped.append((symbol, "WITHIN_BAND"))
                 continue
+            # Clamp to the largest qty that passes all three risk caps, so the
+            # order places (and converges across rounds) instead of being
+            # rejected. running_gross tracks projected gross across this plan's
+            # top-ups (conservative: the round's trims, which free real gross,
+            # are not subtracted).
+            notional_cap_qty = int(cfg.max_order_notional // price)
+            qty_cap_room = max(0, cfg.max_position_qty - current_qty)
+            gross_room_qty = int(max(0.0, cfg.max_gross_exposure - running_gross) // price)
+            qty = min(qty, notional_cap_qty, qty_cap_room, gross_room_qty)
+            if qty <= 0:
+                skipped.append((symbol, "CAPPED"))
+                continue
             if qty * price < cfg.rebalance_min_notional:
                 skipped.append((symbol, "SKIPPED_MIN_NOTIONAL"))
                 continue
             topups.append(RebalanceTrade(symbol, "BUY", qty, "TOPUP",
                                          current_qty + qty))
+            running_gross += qty * price
 
     return RebalancePlan(tuple(trims) + tuple(topups), tuple(skipped))
