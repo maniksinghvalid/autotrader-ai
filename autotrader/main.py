@@ -146,8 +146,9 @@ class TradeEngine:
                                signal.symbol, self._qty)
             eff_qty = sr.qty
         cid = OrderRouter.make_client_order_id(signal.symbol, signal.direction, eff_qty, signal_id)
+        otype, lpx = self._order_kind(signal.direction, price)
         req = OrderRequest(symbol=signal.symbol, side=signal.direction, qty=eff_qty,
-                           order_type="MARKET", limit_price=None, client_order_id=cid)
+                           order_type=otype, limit_price=lpx, client_order_id=cid)
 
         decision = evaluate(req, snap, self._cfg, ref_price=price)
         if not decision.approved:
@@ -171,6 +172,16 @@ class TradeEngine:
         if signal.direction == "BUY" and self._cfg.trailing_stop_pct > 0:
             self._attach_trailing_stop(signal.symbol, eff_qty, price, signal_id)
         return TickResult("ORDER_PLACED", str(ack.broker_order_id))
+
+    def _order_kind(self, side, ref_price: float):
+        """(order_type, limit_price) for an equity entry/exit/rebalance leg.
+        Flag OFF -> ('MARKET', None), byte-for-byte today's behavior. Flag ON ->
+        a capped marketable LIMIT around ref_price. Trailing stops and option legs
+        do NOT use this."""
+        if not self._cfg.limit_orders_enabled:
+            return "MARKET", None
+        from autotrader.limit_pricing import capped_limit_price  # local: keep import cheap
+        return "LIMIT", capped_limit_price(side, ref_price, self._cfg)
 
     def _route_overlay(self, signal: Signal, snap) -> TickResult:
         """Expand an overlay signal into legs and place each through the audited
@@ -409,8 +420,9 @@ class TradeEngine:
         snap = self._b.get_account()
         cid = OrderRouter.make_client_order_id(
             trade.symbol, trade.side, trade.qty, f"{round_id}-rbal")
+        otype, lpx = self._order_kind(trade.side, ref_price)
         req = OrderRequest(symbol=trade.symbol, side=trade.side, qty=trade.qty,
-                           order_type="MARKET", limit_price=None,
+                           order_type=otype, limit_price=lpx,
                            client_order_id=cid)
         decision = evaluate(req, snap, self._cfg, ref_price=ref_price)
         if not decision.approved:
