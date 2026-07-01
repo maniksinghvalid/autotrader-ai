@@ -98,6 +98,10 @@ class SessionRunner:
         elif job == ENTRY_OPEN:
             self._gate.open()
             logger.info("ENTRY_OPEN: entries enabled")
+            # Replay any external BUYs that arrived pre-market (deferred, not dropped)
+            # now that the window is open — routed against a fresh snapshot/quote.
+            if self._engine is not None:
+                self._engine.flush_deferred_entries()
         elif job == REBALANCE:
             self._engine.rebalance(now)
         elif job in (RISK_CHECK_MID, RISK_CHECK_LATE):

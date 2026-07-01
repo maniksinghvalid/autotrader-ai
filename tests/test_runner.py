@@ -137,6 +137,34 @@ def test_run_once_routes_external_signal_from_inbox(tmp_path):
     db.close()
 
 
+def test_pre_market_external_buy_is_deferred_then_placed_at_entry_open(tmp_path):
+    import json
+    from autotrader.signals.inbox import SignalInbox
+    inbox_dir = tmp_path / "inbox"
+    inbox_dir.mkdir()
+    payload = {
+        "routine_id": "r1", "timestamp": "2026-06-12T07:20:00-04:00",
+        "signal_changes": [
+            {"ticker": "AAPL", "direction": "UP", "transition": ["HOLD", "BUY"],
+             "points_delta": 10, "driver": "ticker sweep"}
+        ],
+    }
+    (inbox_dir / "sig1.json").write_text(json.dumps(payload))
+    # Quote 99 < entry 100 -> strategy stays NO_SIGNAL; only the external BUY acts.
+    b = SimBroker(quotes={"US.AAPL": 99.0}, cash=100000.0)
+    runner, db, gate = _build(tmp_path, b, inbox=SignalInbox(str(inbox_dir)))
+
+    # Pre-market: the drop is consumed but entries are closed -> deferred, not placed.
+    runner.run_once(_dt(8, 31))
+    assert b.get_account().position_qty("US.AAPL") == 0
+    assert not (inbox_dir / "sig1.json").exists()   # inbox consumed the drop (once)
+
+    # ENTRY_OPEN (09:45): the runner opens the gate and flushes the deferred BUY.
+    runner.run_once(_dt(9, 46))
+    assert b.get_account().position_qty("US.AAPL") == 10
+    db.close()
+
+
 def test_run_once_skips_inbox_when_unhealthy(tmp_path):
     import json
     from autotrader.signals.inbox import SignalInbox

@@ -168,7 +168,9 @@ def test_submit_external_signal_routes_and_places(tmp_path):
     assert b.get_account().position_qty("US.AAPL") == 10
 
 
-def test_submit_external_signal_blocked_by_entry_gate(tmp_path):
+def test_submit_external_signal_deferred_by_entry_gate(tmp_path):
+    # A pre-market external BUY is deferred (held for the open), not dropped —
+    # nothing is placed yet, but the signal is not lost. See test_deferred_entries.
     from autotrader.domain import Signal
     from autotrader.lifecycle import EntryGate
     b = SimBroker(quotes={"US.AAPL": 101.0}, cash=100000.0)
@@ -180,7 +182,7 @@ def test_submit_external_signal_blocked_by_entry_gate(tmp_path):
                       entry_gate=EntryGate(enabled=False))
     res = eng.submit_external_signal(
         Signal(symbol="US.AAPL", direction="BUY", confidence=0.9, rationale="ext"))
-    assert res.action == "ENTRY_CLOSED"
+    assert res.action == "ENTRY_DEFERRED"
     assert b.get_account().position_qty("US.AAPL") == 0
 
 

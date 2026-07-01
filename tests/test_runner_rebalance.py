@@ -22,6 +22,10 @@ class _Eng:
         self.calls.append(("risk", now))
         return "OK"
 
+    def flush_deferred_entries(self):
+        self.calls.append("flush_deferred")
+        return []
+
 
 class _Watch:
     def ensure_healthy(self):

@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from autotrader.broker import Broker
 from autotrader.config import RiskConfig, load_risk_config
@@ -67,6 +67,13 @@ class TradeEngine:
         self._hedge_confirm_sleep = hedge_confirm_sleep or (lambda _s: None)
         self._alert_url = alert_url
         self._alert_post = alert_post
+        # External BUY signals that arrived while the entry window was closed
+        # (e.g. a routine that fires pre-market). Held here rather than dropped —
+        # the inbox consumes each drop once, so a dropped BUY is lost forever —
+        # and replayed by flush_deferred_entries() when entries open. Keyed latest-
+        # wins per (symbol, direction) so the queue cannot grow unbounded and a
+        # stale duplicate never fires alongside a fresh signal.
+        self._deferred_entries: List[Signal] = []
 
     def tick(self) -> TickResult:
         if self._gate is not None and self._gate.halted:
@@ -91,7 +98,39 @@ class TradeEngine:
         price = self._b.get_quote(signal.symbol)
         if price is None:
             return TickResult("NO_QUOTE", signal.symbol)
-        return self._route_signal(signal, snap, price)
+        res = self._route_signal(signal, snap, price)
+        # A pre-market plain-equity BUY that cleared the confidence filter but hit the
+        # closed entry gate is deferred, not dropped — held until entries open and then
+        # replayed against a fresh snapshot/quote by flush_deferred_entries(). Scoped to
+        # non-overlay entries: option overlays keep their own gating (they record before
+        # their gate check, so deferral there would double-write) — that is a separate
+        # follow-up if pre-market overlay routines need the same treatment.
+        if res.action == "ENTRY_CLOSED" and signal.overlay is None:
+            self._defer_entry(signal)
+            return TickResult("ENTRY_DEFERRED", signal.symbol)
+        return res
+
+    def _defer_entry(self, signal: Signal) -> None:
+        """Queue an external entry for the next open, latest-wins per (symbol,
+        direction) so a re-sent signal supersedes rather than stacks."""
+        self._deferred_entries = [
+            s for s in self._deferred_entries
+            if (s.symbol, s.direction) != (signal.symbol, signal.direction)
+        ]
+        self._deferred_entries.append(signal)
+
+    def flush_deferred_entries(self) -> "List[TickResult]":
+        """Replay entries deferred while the window was closed. No-op unless entries
+        are now open (so a still-closed flush keeps them queued, never lost). Each is
+        re-routed through submit_external_signal, so it is re-sized and re-risk-checked
+        against the CURRENT snapshot/quote — never the stale pre-market ones."""
+        if self._gate is None or not self._gate.entries_enabled:
+            return []
+        pending, self._deferred_entries = self._deferred_entries, []
+        results = [self.submit_external_signal(s) for s in pending]
+        if pending:
+            logger.info("flushed %d deferred entry(ies) at entry-open", len(pending))
+        return results
 
     def _route_signal(self, signal: Signal, snap, price: float) -> TickResult:
         if signal.confidence < self._cfg.min_confidence:
