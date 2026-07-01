@@ -76,8 +76,8 @@ class SimBroker(Broker):
     def get_account(self) -> AccountSnapshot:
         positions = tuple(self._positions.values())
         return AccountSnapshot(cash=self._cash, total_assets=self._cash,
-                               day_pnl=0.0, stale=False, unrealized_pnl=0.0,
-                               positions=positions)
+                               day_pnl=0.0, stale=False, positions_loaded=True,
+                               unrealized_pnl=0.0, positions=positions)
 
     def get_open_orders(self) -> List[OrderAck]:
         return list(self._open.values())

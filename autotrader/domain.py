@@ -169,6 +169,7 @@ class AccountSnapshot:
     total_assets: float
     day_pnl: float
     stale: bool
+    positions_loaded: bool = True   # False = position query FAILED (not flat)
     unrealized_pnl: float = 0.0
     positions: Tuple[Position, ...] = ()
 

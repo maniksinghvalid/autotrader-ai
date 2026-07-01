@@ -69,3 +69,10 @@ def test_trailing_stop_cleared_by_cancel_all():
     assert len(b.get_open_orders()) == 1
     b.cancel_all()
     assert b.get_open_orders() == []
+
+
+def test_sim_broker_account_reports_positions_loaded():
+    from autotrader.sim_broker import SimBroker
+    br = SimBroker(quotes={"US.AAPL": 200.0})
+    snap = br.get_account()
+    assert snap.positions_loaded is True and snap.stale is False

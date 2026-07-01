@@ -232,3 +232,19 @@ def test_place_order_raises_rate_limit_when_order_limiter_drained():
     with pytest.raises(BrokerError) as exc_info:
         b.place_order(req)
     assert exc_info.value.kind == BrokerErrorKind.RATE_LIMIT
+
+
+def test_get_account_marks_positions_not_loaded_on_query_failure(monkeypatch):
+    b = _broker(_FakeTrade(acc_ok=True, pos_ok=True))
+    monkeypatch.setattr(b, "_positions", lambda: None)
+    snap = b.get_account()
+    assert snap.positions_loaded is False
+    assert snap.stale is True
+    assert snap.positions == ()
+
+
+def test_get_account_marks_positions_loaded_when_flat(monkeypatch):
+    b = _broker(_FakeTrade(acc_ok=True, pos_ok=True))
+    monkeypatch.setattr(b, "_positions", lambda: [])
+    snap = b.get_account()
+    assert snap.positions_loaded is True

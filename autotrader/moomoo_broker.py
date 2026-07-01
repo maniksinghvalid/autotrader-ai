@@ -274,14 +274,15 @@ class MoomooBroker(Broker):
         positions = self._positions()
         if positions is None:
             # Position query FAILED — never present a falsely-flat snapshot the
-            # risk core would trust. Mark stale so it refuses to trade (E1/R7).
+            # risk core would trust. Mark stale AND not-loaded (E1/R7).
             return AccountSnapshot(cash=cash, total_assets=total, day_pnl=pnl,
-                                   stale=True, unrealized_pnl=upnl, positions=())
+                                   stale=True, positions_loaded=False,
+                                   unrealized_pnl=upnl, positions=())
         # A genuinely empty account with zero assets is also treated as stale.
         stale = (total == 0 and not positions)
         return AccountSnapshot(cash=cash, total_assets=total, day_pnl=pnl,
-                               stale=stale, unrealized_pnl=upnl,
-                               positions=tuple(positions))
+                               stale=stale, positions_loaded=True,
+                               unrealized_pnl=upnl, positions=tuple(positions))
 
     def _positions(self) -> Optional[List[Position]]:
         """Return current positions, or None if the position query FAILED.

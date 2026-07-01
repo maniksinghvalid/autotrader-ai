@@ -134,3 +134,15 @@ def test_short_option_contracts_no_prefix_collision():
     )
     assert snap.short_option_contracts("US.O", "CALL") == 1
     assert snap.short_option_contracts("US.OXY", "CALL") == 3
+
+
+def test_account_snapshot_positions_loaded_defaults_true():
+    snap = AccountSnapshot(cash=1.0, total_assets=1.0, day_pnl=0.0, stale=False)
+    assert snap.positions_loaded is True
+
+
+def test_account_snapshot_positions_loaded_can_be_false():
+    snap = AccountSnapshot(cash=1.0, total_assets=1.0, day_pnl=0.0, stale=True,
+                           positions_loaded=False)
+    assert snap.positions_loaded is False
+    assert snap.positions == ()
