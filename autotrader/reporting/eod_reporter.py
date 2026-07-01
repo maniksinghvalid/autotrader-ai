@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Callable, Optional, Tuple
 
 from autotrader.reporting.option_code import parse_option_code
-from autotrader.reporting.classify import Leg, classify_strategy
+from autotrader.reporting.classify import Leg, classify_strategy, overlay_intent_mismatch
 from autotrader.reporting.economics import StrategyEconomics, compute_economics
 from autotrader.reporting.capital_flow import CapitalFlow, compute_capital_flow
 
@@ -28,6 +28,7 @@ class SignalRef:
     direction: str
     confidence: float
     rationale: str
+    intent_prefix: str = ""   # "" when the rationale carried no overlay prefix
 
 
 @dataclass(frozen=True)
@@ -87,10 +88,13 @@ class EODReporter:
                          "BEAR_PUT_SPREAD", "CALL_DIAGONAL", "LEAP")
 
     @classmethod
-    def _strip_overlay_prefix(cls, rationale: str) -> str:
-        # Signal rationale for an overlay is stored as "COVERED_CALL: <thesis>".
+    def _split_overlay_prefix(cls, rationale: str) -> Tuple[str, str]:
+        """Signal rationale for an overlay is stored as "COVERED_CALL: <thesis>".
+        Return (intent_prefix, thesis); intent_prefix is "" for a plain rationale."""
         head, sep, tail = rationale.partition(": ")
-        return tail if (sep and head in cls._OVERLAY_PREFIXES) else rationale
+        if sep and head in cls._OVERLAY_PREFIXES:
+            return head, tail
+        return "", rationale
 
     @staticmethod
     def _underlying_of(symbol: str) -> str:
@@ -132,8 +136,11 @@ class EODReporter:
                 "SELECT direction, confidence, rationale FROM signals "
                 "WHERE symbol=? AND substr(ts,1,10)=? ORDER BY id DESC LIMIT 1",
                 (under, today)).fetchone()
-            signal = (SignalRef(sig[0], sig[1], self._strip_overlay_prefix(sig[2]))
-                      if sig else None)
+            if sig:
+                prefix, thesis = self._split_overlay_prefix(sig[2])
+                signal = SignalRef(sig[0], sig[1], thesis, prefix)
+            else:
+                signal = None
             driver = None
             if signal is None:
                 drv = c.execute(
@@ -239,6 +246,10 @@ class EODReporter:
         emoji = self._EMOJI.get(g.label, "▫️")
         conf = f"  conf {g.signal.confidence:.2f}" if g.signal else ""
         head = f"{emoji} {g.label} — {self._short(g.underlying)}{conf}"
+        if g.signal is not None and g.signal.intent_prefix:
+            missing = overlay_intent_mismatch(g.signal.intent_prefix, g.label)
+            if missing is not None:
+                head += f" ⚠ INTENDED: {missing} — HEDGE LEG MISSING (unhedged)"
         body = [self._leg_line(l, asof) for l in g.legs]
         econ = self._econ_line(g.economics)
         if econ:

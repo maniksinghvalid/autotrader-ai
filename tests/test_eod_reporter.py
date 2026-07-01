@@ -325,3 +325,43 @@ def test_capital_flow_label_deployed_when_negative(tmp_path):
     assert "Net cash deployed −2,000" in text                 # U+2212 minus sign
     assert "raised" not in text.lower()
     db.close()
+
+
+def _seed_unhedged_intent(db):
+    # A protective-put INTENT (signal rationale prefix) but the option leg never
+    # filled — only the stock BUY is in fills. Reporter must flag it unhedged.
+    db._conn.execute(
+        "INSERT INTO fills (fill_id,ts,symbol,side,qty,price) VALUES (?,?,?,?,?,?)",
+        ("s1", _DAY + "T14:00:00+00:00", "US.AAPL", "BUY", 100, 198.00))
+    db._conn.execute(
+        "INSERT INTO signals (ts,symbol,direction,confidence,rationale,signal_id) "
+        "VALUES (?,?,?,?,?,?)",
+        (_DAY + "T13:59:00+00:00", "US.AAPL", "BUY", 0.80,
+         "PROTECTIVE_PUT: hedge the breakout", "sig-pp"))
+    db._conn.commit()
+
+
+def test_reporter_flags_unhedged_intended_overlay(tmp_path):
+    db = DB(str(tmp_path / "r.db"))
+    _seed_unhedged_intent(db)
+    r = _reporter(db, lambda url, payload: 200)
+    data = r._gather(_now())
+    g = next(x for x in data.groups if x.underlying == "US.AAPL")
+    assert g.label == "Stock entry"
+    assert g.signal is not None
+    assert g.signal.intent_prefix == "PROTECTIVE_PUT"
+    # thesis text still has the prefix stripped for readability
+    assert g.signal.rationale == "hedge the breakout"
+    text = r._group_text(g, _now().date())
+    assert "⚠ INTENDED: Protective Put — HEDGE LEG MISSING (unhedged)" in text
+
+
+def test_reporter_no_flag_when_intent_matches(tmp_path):
+    # Existing covered-call fixture: intent COVERED_CALL, structural Covered Call.
+    db = DB(str(tmp_path / "r.db"))
+    _seed(db)
+    r = _reporter(db, lambda url, payload: 200)
+    data = r._gather(_now())
+    cc = next(x for x in data.groups if x.underlying == "US.CLOV")
+    text = r._group_text(cc, _now().date())
+    assert "HEDGE LEG MISSING" not in text
