@@ -44,3 +44,30 @@ def classify_strategy(legs: Sequence[Leg]) -> str:
     if has_stock and not calls and not puts:
         return "Stock entry" if stock[0].side == "BUY" else "Stock exit"
     return "Strategy"
+
+
+# Overlay-intent prefixes carried on the signal rationale (eod_reporter stores
+# "PROTECTIVE_PUT: <thesis>"), mapped to display name + the structural labels
+# that PROVE the intended option hedge actually filled. If the day's structural
+# label is not in that proof set, the hedge leg is missing -> mismatch.
+_INTENT_PROOF: dict = {
+    "PROTECTIVE_PUT": ("Protective Put", {"Protective Put", "Collar"}),
+    "COLLAR": ("Collar", {"Collar"}),
+    "COVERED_CALL": ("Covered Call",
+                     {"Covered Call", "Covered Call (existing shares)", "Collar"}),
+    "BEAR_PUT_SPREAD": ("Bear Put Spread", {"Bear Put Spread"}),
+    "CALL_DIAGONAL": ("PMCC / Call Diagonal", {"PMCC / Call Diagonal"}),
+    "LEAP": ("LEAP", {"LEAP"}),
+}
+
+
+def overlay_intent_mismatch(prefix: str, label: str) -> Optional[str]:
+    """Reconcile intended overlay (signal-rationale prefix) vs. the structural,
+    fills-based label. Return the intended strategy's display name when the
+    intent's option hedge is NOT proven by the structural label (hedge leg
+    missing); else None. Pure, total, never raises."""
+    entry = _INTENT_PROOF.get((prefix or "").upper())
+    if entry is None:
+        return None
+    display, proof_labels = entry
+    return None if label in proof_labels else display

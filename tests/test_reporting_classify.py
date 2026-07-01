@@ -51,3 +51,42 @@ def test_stock_entry_and_exit():
 
 def test_unrecognized_is_generic():
     assert classify_strategy([]) == "Strategy"
+
+
+def test_intent_protective_put_but_label_stock_entry_mismatches():
+    # Intent was a protective put; fills show stock only -> hedge leg missing.
+    from autotrader.reporting.classify import overlay_intent_mismatch
+    assert overlay_intent_mismatch("PROTECTIVE_PUT", "Stock entry") == "Protective Put"
+
+
+def test_intent_collar_but_label_stock_entry_mismatches():
+    from autotrader.reporting.classify import overlay_intent_mismatch
+    assert overlay_intent_mismatch("COLLAR", "Stock entry") == "Collar"
+
+
+def test_intent_covered_call_but_label_stock_entry_mismatches():
+    from autotrader.reporting.classify import overlay_intent_mismatch
+    assert overlay_intent_mismatch("COVERED_CALL", "Stock entry") == "Covered Call"
+
+
+def test_intent_matches_actual_no_mismatch():
+    # Fills produced the real protective put -> structural label agrees.
+    from autotrader.reporting.classify import overlay_intent_mismatch
+    assert overlay_intent_mismatch("PROTECTIVE_PUT", "Protective Put") is None
+
+
+def test_collar_intent_partial_still_mismatches_covered_call():
+    # Collar intended; only the short call filled -> structurally a covered call,
+    # which still lacks the protective put -> mismatch on the missing hedge.
+    from autotrader.reporting.classify import overlay_intent_mismatch
+    assert overlay_intent_mismatch("COLLAR", "Covered Call") == "Collar"
+
+
+def test_no_prefix_never_mismatches():
+    from autotrader.reporting.classify import overlay_intent_mismatch
+    assert overlay_intent_mismatch("", "Stock entry") is None
+
+
+def test_unknown_prefix_never_mismatches():
+    from autotrader.reporting.classify import overlay_intent_mismatch
+    assert overlay_intent_mismatch("MOMENTUM", "Stock entry") is None
