@@ -14,6 +14,7 @@ projection is rebuilt from it on startup in Phase 3+.
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 from datetime import date, datetime, timezone
@@ -22,6 +23,8 @@ from typing import TYPE_CHECKING, List, Optional
 
 if TYPE_CHECKING:
     from autotrader.domain import Fill, Position
+
+logger = logging.getLogger("autotrader.db")
 
 
 _SCHEMA = """
@@ -67,16 +70,6 @@ CREATE TABLE IF NOT EXISTS positions (
     updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS performance (
-    date           TEXT PRIMARY KEY,
-    day_pnl        REAL NOT NULL,
-    total_assets   REAL NOT NULL,
-    cash           REAL NOT NULL,
-    gross_exposure REAL NOT NULL,
-    unrealized_pnl REAL NOT NULL DEFAULT 0,
-    updated_at     TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS halts (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     ts           TEXT NOT NULL,
@@ -102,6 +95,18 @@ CREATE TABLE IF NOT EXISTS drivers (
 );
 """
 
+_PERFORMANCE_TABLE = """
+CREATE TABLE IF NOT EXISTS performance (
+    date           TEXT PRIMARY KEY,
+    day_pnl        REAL NOT NULL,
+    total_assets   REAL NOT NULL,
+    cash           REAL NOT NULL,
+    gross_exposure REAL,
+    unrealized_pnl REAL NOT NULL DEFAULT 0,
+    updated_at     TEXT NOT NULL
+);
+"""
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -116,11 +121,25 @@ class DB:
         db_dir = Path(path).parent
         db_dir.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(path, check_same_thread=False)
-        self._conn.executescript(_SCHEMA)
+        self._conn.executescript(_SCHEMA + _PERFORMANCE_TABLE)
         cols = [r[1] for r in self._conn.execute("PRAGMA table_info(performance)")]
         if "unrealized_pnl" not in cols:
             self._conn.execute(
                 "ALTER TABLE performance ADD COLUMN unrealized_pnl REAL NOT NULL DEFAULT 0")
+        # gross_exposure must be nullable to represent "exposure unknown"
+        # (positions failed to load); legacy DBs created it NOT NULL.
+        perf_sql = self._conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='performance'"
+        ).fetchone()
+        if perf_sql and "gross_exposure REAL NOT NULL" in perf_sql[0]:
+            self._conn.executescript(
+                "ALTER TABLE performance RENAME TO performance_old;"
+                + _PERFORMANCE_TABLE +
+                "INSERT INTO performance "
+                "(date,day_pnl,total_assets,cash,gross_exposure,unrealized_pnl,updated_at) "
+                "SELECT date,day_pnl,total_assets,cash,gross_exposure,unrealized_pnl,updated_at "
+                "FROM performance_old;"
+                "DROP TABLE performance_old;")
         self._conn.commit()
         self._lock = threading.Lock()
 
@@ -209,8 +228,17 @@ class DB:
             self._conn.commit()
 
     def record_performance(self, day_pnl: float, total_assets: float,
-                           cash: float, gross_exposure: float,
-                           unrealized_pnl: float = 0.0) -> None:
+                           cash: float, gross_exposure: Optional[float],
+                           unrealized_pnl: float = 0.0, *,
+                           positions_loaded: bool = True) -> None:
+        # Invariant: never persist a fabricated gross_exposure when positions did
+        # not load. A failed snapshot stores NULL ("exposure unknown"), never 0.
+        if not positions_loaded:
+            if gross_exposure not in (None, 0, 0.0):
+                logger.warning(
+                    "record_performance: coercing gross_exposure=%s to NULL "
+                    "(positions_loaded is False)", gross_exposure)
+            gross_exposure = None
         with self._lock:
             self._conn.execute(
                 "INSERT OR REPLACE INTO performance "

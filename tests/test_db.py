@@ -78,6 +78,33 @@ def test_record_performance_upserts_by_date(tmp_path):
     db.close()
 
 
+def test_record_performance_writes_null_gross_when_positions_not_loaded(tmp_path):
+    db = _db(tmp_path)
+    db.record_performance(day_pnl=0.0, total_assets=1000.0, cash=1000.0,
+                          gross_exposure=0.0, positions_loaded=False)
+    row = db._conn.execute("SELECT gross_exposure FROM performance").fetchone()
+    assert row[0] is None, "false 0% must not be persisted when positions failed to load"
+    db.close()
+
+
+def test_record_performance_accepts_explicit_none_gross(tmp_path):
+    db = _db(tmp_path)
+    db.record_performance(day_pnl=0.0, total_assets=1000.0, cash=1000.0,
+                          gross_exposure=None, positions_loaded=False)
+    row = db._conn.execute("SELECT gross_exposure FROM performance").fetchone()
+    assert row[0] is None
+    db.close()
+
+
+def test_record_performance_stores_real_gross_when_loaded(tmp_path):
+    db = _db(tmp_path)
+    db.record_performance(day_pnl=5.0, total_assets=1000.0, cash=900.0,
+                          gross_exposure=100.0, positions_loaded=True)
+    row = db._conn.execute("SELECT gross_exposure FROM performance").fetchone()
+    assert row[0] == 100.0
+    db.close()
+
+
 def test_record_halt_and_resolve(tmp_path):
     db = _db(tmp_path)
     halt_id = db.record_halt("daily loss limit breached")
