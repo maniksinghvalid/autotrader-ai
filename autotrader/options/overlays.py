@@ -66,6 +66,7 @@ class OverlayDef:
     requires_underlying: bool
     legs: Tuple[LegSpec, ...]
     single_expiry: bool = False
+    opens_stock: bool = False              # True => planner prepends a BUY equity anchor leg
     dte_to_close: object = _UNSET          # int override, or _UNSET to use cfg
     profit_target_pct: object = _UNSET     # float|None override, or _UNSET to use cfg
 

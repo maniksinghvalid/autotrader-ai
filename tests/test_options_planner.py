@@ -274,3 +274,42 @@ def test_existing_overlay_exit_falls_back_to_global_cfg():
     assert isinstance(plan, OverlayPlan)
     assert plan.exit.dte_to_close == 7          # cfg.option_dte_to_close fallback
     assert plan.exit.profit_target_pct == 0.5   # cfg.option_profit_target_pct fallback
+
+
+def _pp_entry_cfg(**over):
+    return _cfg(allowed_overlays=frozenset({"PROTECTIVE_PUT"}),
+                max_option_contracts=5, **over)
+
+
+def test_protective_put_no_shares_still_has_no_stock_leg_by_default():
+    # Baseline: today's PROTECTIVE_PUT requires pre-held shares (opens_stock
+    # False) -> no shares -> SKIP_NO_UNDERLYING, no stock leg invented.
+    from autotrader.options.planner import OverlaySkip
+    skip = build_overlay_plan(_sig(OverlayType.PROTECTIVE_PUT), _snap(0),
+                              _broker(), _pp_entry_cfg(), "s", _asof())
+    assert isinstance(skip, OverlaySkip) and skip.reason == "SKIP_NO_UNDERLYING"
+
+
+def test_opens_stock_overlay_prepends_equity_anchor_leg(monkeypatch):
+    # Flip PROTECTIVE_PUT to an opens_stock entry def for this test: the plan
+    # must lead with a BUY stock leg (option=None) sized to contracts*100, then
+    # the long put.
+    from autotrader.options import overlays
+    from autotrader.options.overlays import OverlayDef, LegSpec
+    entry_def = OverlayDef(
+        requires_underlying=False, opens_stock=True,
+        legs=(LegSpec(right="PUT", side="BUY"),))
+    monkeypatch.setitem(overlays.REGISTRY, OverlayType.PROTECTIVE_PUT, entry_def)
+    plan = build_overlay_plan(_sig(OverlayType.PROTECTIVE_PUT), _snap(0),
+                              _broker(), _pp_entry_cfg(option_default_contracts=1),
+                              "s", _asof())
+    assert isinstance(plan, OverlayPlan)
+    stock_leg = plan.legs[0].request
+    assert stock_leg.option is None
+    assert stock_leg.side == "BUY"
+    assert stock_leg.symbol == "US.AAPL"
+    assert stock_leg.qty == 100                 # 1 contract * 100 multiplier
+    assert plan.legs[0].quote.premium == 200.0  # live stock quote
+    # hedge leg still present
+    assert any(l.request.option is not None and l.request.side == "BUY"
+               for l in plan.legs)

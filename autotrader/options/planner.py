@@ -91,6 +91,22 @@ def build_overlay_plan(signal: Signal, snapshot: AccountSnapshot, chain_provider
 
     corr = f"ov-{signal_id}-{overlay.value}"
     legs = []
+
+    if deff.opens_stock:
+        stock_px = chain_provider.get_quote(underlying)
+        if stock_px is None or stock_px <= 0:
+            return OverlaySkip(overlay, underlying, "SKIP_NO_UNDERLYING")
+        shares = contracts * 100   # US equity option multiplier
+        scid = OrderRouter.make_client_order_id(
+            underlying, "BUY", shares, f"{signal_id}-{overlay.value}-stock")
+        sreq = OrderRequest(symbol=underlying, side="BUY", qty=shares,
+                            order_type="MARKET", limit_price=None,
+                            client_order_id=scid, position_effect="OPEN",
+                            correlation_id=corr)
+        sq = OptionQuote(code=underlying, underlying=underlying, expiry=asof,
+                         strike=stock_px, right="CALL", delta=0.0, premium=stock_px)
+        legs.append(OverlayLeg(sreq, sq))
+
     anchor_expiry = None
     for i, spec in enumerate(deff.legs):
         target_delta = spec.target_delta if spec.target_delta is not None else cfg.option_target_delta
