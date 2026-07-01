@@ -194,6 +194,13 @@ class EODReporter:
             return "—"
         return f"{d.unrealized_pnl:+,.2f}"
 
+    @staticmethod
+    def _capital_flow_verb(net: float) -> str:
+        # Value/formula unchanged; only the verb follows the sign.
+        if net >= 0:
+            return f"Net cash raised +{net:,.0f}"
+        return f"Net cash deployed −{abs(net):,.0f}"
+
     _EMOJI = {"Covered Call": "🟢", "Covered Call (existing shares)": "🟢",
               "Protective Put": "🛡️", "Collar": "🔵", "Bear Put Spread": "🔻",
               "LEAP": "🚀", "PMCC / Call Diagonal": "🚀",
@@ -256,7 +263,7 @@ class EODReporter:
             lines.append(
                 f"Premium collected {cf.premium_collected:+,.0f} · "
                 f"Premium paid {-cf.premium_paid:+,.0f} · "
-                f"Net cash deployed {cf.net_cash_deployed:+,.0f}")
+                f"{self._capital_flow_verb(cf.net_cash_deployed)}")
         return lines
 
     def _render(self, d: ReportData) -> dict:
@@ -291,7 +298,7 @@ class EODReporter:
             blocks.append({"type": "section", "text": {"type": "mrkdwn",
                 "text": (f"*Capital flow*\nPremium collected {cf.premium_collected:+,.0f} · "
                          f"Premium paid {-cf.premium_paid:+,.0f} · "
-                         f"Net cash deployed {cf.net_cash_deployed:+,.0f}")}})
+                         f"{self._capital_flow_verb(cf.net_cash_deployed)}")}})
         blocks.append({"type": "divider"})
         if d.groups:
             for g in d.groups:

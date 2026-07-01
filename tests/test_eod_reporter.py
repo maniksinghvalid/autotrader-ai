@@ -292,3 +292,36 @@ def test_render_unrealized_unavailable_when_stale(tmp_path):
     text = _reporter(db, lambda u, p: 200)._render(
         _reporter(db, lambda u, p: 200)._gather(_now()))["text"]
     assert "Unrealized unavailable" in text
+
+
+def _seed_flow(db, fills):
+    db._conn.execute(
+        "INSERT INTO performance "
+        "(date,day_pnl,total_assets,cash,gross_exposure,unrealized_pnl,updated_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (_DAY, 0.0, 100000.0, 100000.0, 1000.0, 0.0, _DAY + "T20:30:00+00:00"))
+    for fid, sym, side, qty, px in fills:
+        db._conn.execute(
+            "INSERT INTO fills (fill_id,ts,symbol,side,qty,price) VALUES (?,?,?,?,?,?)",
+            (fid, _DAY + "T14:00:00+00:00", sym, side, qty, px))
+    db._conn.commit()
+
+
+def test_capital_flow_label_raised_when_positive(tmp_path):
+    db = DB(str(tmp_path / "r.db"))
+    _seed_flow(db, [("s1", "US.SCHF", "SELL", 100, 28.27)])   # +2827 net
+    text = _reporter(db, lambda u, p: 200)._render(
+        _reporter(db, lambda u, p: 200)._gather(_now()))["text"]
+    assert "Net cash raised +2,827" in text
+    assert "deployed" not in text.lower()
+    db.close()
+
+
+def test_capital_flow_label_deployed_when_negative(tmp_path):
+    db = DB(str(tmp_path / "r.db"))
+    _seed_flow(db, [("b1", "US.AAPL", "BUY", 100, 20.0)])     # -2000 net
+    text = _reporter(db, lambda u, p: 200)._render(
+        _reporter(db, lambda u, p: 200)._gather(_now()))["text"]
+    assert "Net cash deployed −2,000" in text                 # U+2212 minus sign
+    assert "raised" not in text.lower()
+    db.close()
