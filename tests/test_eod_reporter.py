@@ -240,3 +240,28 @@ def test_malformed_fill_renders_without_raising(tmp_path):
     # The fill must appear in the output (as symbol or underlying)
     assert malformed in payload["text"] or "AAPL26XXC1000" in payload["text"]
     db.close()
+
+
+def _seed_null_gross(db):
+    db._conn.execute(
+        "INSERT INTO performance "
+        "(date,day_pnl,total_assets,cash,gross_exposure,unrealized_pnl,updated_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (_DAY, 12.0, 100000.0, 100000.0, None, 0.0, _DAY + "T20:30:00+00:00"))
+    db._conn.commit()
+
+
+def test_render_null_gross_shows_unavailable(tmp_path):
+    db = DB(str(tmp_path / "r.db"))
+    _seed_null_gross(db)
+    payload = _reporter(db, lambda u, p: 200)._render(
+        _reporter(db, lambda u, p: 200)._gather(_now()))
+    text = payload["text"]
+    assert "exposure unavailable — snapshot stale" in text
+    assert "Gross exp 0%" not in text
+    # Block Kit gross field carries the same message, never "0%".
+    flat = " ".join(
+        f["text"] for b in payload["blocks"] if b.get("fields")
+        for f in b["fields"])
+    assert "exposure unavailable — snapshot stale" in flat
+    db.close()

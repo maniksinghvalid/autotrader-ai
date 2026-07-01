@@ -173,9 +173,14 @@ class EODReporter:
         base = (d.total_assets or 0.0) - (d.realized_pnl or 0.0)
         return (d.realized_pnl / base * 100) if (base and d.realized_pnl is not None) else 0.0
 
+    _GROSS_UNAVAILABLE = "exposure unavailable — snapshot stale"
+
     @staticmethod
-    def _gross_pct(d: ReportData) -> float:
-        return (d.gross_exposure / d.total_assets * 100) if (d.total_assets and d.gross_exposure is not None) else 0.0
+    def _gross_text(d: ReportData) -> str:
+        if d.gross_exposure is None or d.total_assets is None:
+            return EODReporter._GROSS_UNAVAILABLE
+        pct = (d.gross_exposure / d.total_assets * 100) if d.total_assets else 0.0
+        return f"{pct:.0f}%"
 
     _EMOJI = {"Covered Call": "🟢", "Covered Call (existing shares)": "🟢",
               "Protective Put": "🛡️", "Collar": "🔵", "Bear Put Spread": "🔻",
@@ -233,7 +238,7 @@ class EODReporter:
             lines.append(
                 f"Realized {realized:+,.2f} ({self._pnl_pct(d):+.2f}%){unreal} · "
                 f"Assets {d.total_assets:,.0f} · Cash {d.cash:,.0f} · "
-                f"Gross exp {self._gross_pct(d):.0f}%")
+                f"Gross exp {self._gross_text(d)}")
         cf = d.capital_flow
         if cf is not None:
             lines.append(
@@ -266,7 +271,7 @@ class EODReporter:
                 {"type": "mrkdwn", "text": f"*Unrealized*\n{(d.unrealized_pnl or 0.0):+,.2f}"},
                 {"type": "mrkdwn", "text": f"*Total assets*\n{d.total_assets:,.0f}"},
                 {"type": "mrkdwn", "text": f"*Cash*\n{d.cash:,.0f}"},
-                {"type": "mrkdwn", "text": f"*Gross exp.*\n{self._gross_pct(d):.0f}%"},
+                {"type": "mrkdwn", "text": f"*Gross exp.*\n{self._gross_text(d)}"},
             ]
             blocks.append({"type": "section", "fields": fields})
         if d.capital_flow is not None:
