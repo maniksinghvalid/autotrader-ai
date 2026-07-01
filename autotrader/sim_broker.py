@@ -14,7 +14,8 @@ from autotrader.options.chain import OptionQuote
 
 class SimBroker(Broker):
     def __init__(self, quotes: Dict[str, float], cash: float = 10000.0,
-                 auto_fill: bool = True, option_chains=None):
+                 auto_fill: bool = True, option_chains=None,
+                 spread_bps: float = 0.0, slippage_bps: float = 0.0):
         self._quotes = dict(quotes)
         self._cash = cash
         self._positions: Dict[str, Position] = {}
@@ -23,6 +24,10 @@ class SimBroker(Broker):
         self._acks_by_cid: Dict[str, OrderAck] = {}
         self._auto_fill = auto_fill
         self._seq = 0
+        # Paper spread/slippage model (basis points of the reference quote). Both
+        # default to 0 => bid==ask==ref and MARKET fills at ref (today's behavior).
+        self._spread_bps = spread_bps
+        self._slippage_bps = slippage_bps
         # keyed by (underlying.upper(), right.upper()) -> List[OptionQuote]
         self._chains = {(u.upper(), r.upper()): list(v)
                         for (u, r), v in (option_chains or {}).items()}
@@ -36,6 +41,21 @@ class SimBroker(Broker):
     def get_quote(self, symbol: str) -> Optional[float]:
         return self._quotes.get(symbol)
 
+    def _touch(self, symbol: str):
+        """Simulated (bid, ask) around the stored reference. Half-spread each side."""
+        ref = self._quotes.get(symbol, 0.0)
+        half = ref * (self._spread_bps / 1e4)
+        return ref - half, ref + half
+
+    def _market_fill_price(self, symbol: str, side: str) -> float:
+        bid, ask = self._touch(symbol)
+        slip = self._slippage_bps / 1e4
+        return ask * (1 + slip) if side == "BUY" else bid * (1 - slip)
+
+    def _limit_is_marketable(self, symbol: str, side: str, limit_price: float) -> bool:
+        bid, ask = self._touch(symbol)
+        return limit_price >= ask if side == "BUY" else limit_price <= bid
+
     def get_option_chain(self, underlying: str, right: OptionRight,
                          dte_min: int = 0, dte_max: int = 100000) -> List[OptionQuote]:
         # Window args accepted for interface parity; the precise DTE filter runs
@@ -47,10 +67,20 @@ class SimBroker(Broker):
             return self._acks_by_cid[req.client_order_id]
         self._seq += 1
         boid = f"sim-{self._seq}"
-        price = req.limit_price or self._quotes.get(req.symbol, 0.0)
-        # A TRAILING_STOP is a broker-RESTING protective order: it never fills
-        # immediately, regardless of auto_fill (it waits for the trail to trigger).
-        rests = req.order_type == "TRAILING_STOP" or not self._auto_fill
+        # A TRAILING_STOP is broker-RESTING; a non-marketable LIMIT rests too.
+        if req.order_type == "TRAILING_STOP" or not self._auto_fill:
+            rests = True
+            price = 0.0
+        elif req.order_type == "LIMIT":
+            if self._limit_is_marketable(req.symbol, req.side, req.limit_price):
+                rests = False
+                price = req.limit_price          # marketable limit fills at its price
+            else:
+                rests = True
+                price = 0.0
+        else:  # MARKET
+            rests = False
+            price = self._market_fill_price(req.symbol, req.side)
         if not rests:
             signed = req.qty if req.side == "BUY" else -req.qty
             self._cash -= signed * price
