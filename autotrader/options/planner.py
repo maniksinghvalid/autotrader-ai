@@ -122,10 +122,15 @@ def build_overlay_plan(signal: Signal, snapshot: AccountSnapshot, chain_provider
             anchor_expiry = q.expiry
         contract = to_contract(q)
         qty = contracts * spec.ratio
+        if cfg.limit_orders_enabled:
+            from autotrader.limit_pricing import capped_limit_price  # local import
+            otype, lpx = "LIMIT", capped_limit_price(spec.side, q.premium, cfg)
+        else:
+            otype, lpx = "MARKET", None
         cid = OrderRouter.make_client_order_id(
             q.code, spec.side, qty, f"{signal_id}-{overlay.value}-{i}")
         req = OrderRequest(symbol=q.code, side=spec.side, qty=qty,
-                           order_type="MARKET", limit_price=None,
+                           order_type=otype, limit_price=lpx,
                            client_order_id=cid, option=contract,
                            position_effect=spec.position_effect,
                            correlation_id=corr)

@@ -68,3 +68,50 @@ def test_flag_on_rebalance_sell_emits_capped_sell_limit(tmp_path):
     intent = _last_intent(str(tmp_path / "audit.jsonl"))
     assert intent["order_type"] == "LIMIT"
     assert intent["limit_price"] == pytest.approx(100.0 - 100.0 * 0.0010)  # 100 - 10bps
+
+
+def _put_chain(asof):
+    from datetime import timedelta
+    from autotrader.options.chain import OptionQuote
+    return [OptionQuote("US.AAPL260721P190000", "US.AAPL", asof + timedelta(days=35),
+                        190, "PUT", -0.30, 4.0)]
+
+
+def _overlay_cfg(**over):
+    base = dict(trading_env="PAPER", min_confidence=0.6, max_order_notional=200000,
+                max_position_qty=1000, daily_loss_limit=500, max_gross_exposure=1_000_000,
+                allowed_symbols=frozenset({"US.AAPL"}),
+                allowed_overlays=frozenset({"PROTECTIVE_PUT"}), max_option_contracts=5,
+                option_max_risk_pct=0.5)
+    base.update(over)
+    return RiskConfig(**base)
+
+
+def _build_plan(cfg):
+    from datetime import date
+    from autotrader.domain import Signal, OverlayType, Position, AccountSnapshot
+    from autotrader.options.planner import build_overlay_plan, OverlayPlan
+    asof = date(2026, 6, 16)
+    b = SimBroker(quotes={"US.AAPL": 200.0},
+                  option_chains={("US.AAPL", "PUT"): _put_chain(asof)})
+    snap = AccountSnapshot(cash=1_000_000.0, total_assets=1_000_000.0, day_pnl=0.0,
+                           stale=False, positions=(Position("US.AAPL", 100, 200.0),))
+    sig = Signal("US.AAPL", "BUY", 0.9, "hedge", overlay=OverlayType.PROTECTIVE_PUT)
+    plan = build_overlay_plan(sig, snap, b, cfg, "sig-1", asof)
+    assert isinstance(plan, OverlayPlan)
+    return plan
+
+
+def test_flag_off_option_leg_is_market():
+    plan = _build_plan(_overlay_cfg(limit_orders_enabled=False))
+    leg = plan.legs[0]
+    assert leg.request.order_type == "MARKET"
+    assert leg.request.limit_price is None
+
+
+def test_flag_on_option_leg_is_capped_limit_around_premium():
+    plan = _build_plan(_overlay_cfg(limit_orders_enabled=True, order_cap_bps=50.0))
+    leg = plan.legs[0]
+    assert leg.request.order_type == "LIMIT"
+    # long PUT (BUY) premium 4.0 + 50bps of 4.0 = 4.02, rounded to the tick.
+    assert leg.request.limit_price == pytest.approx(4.02)
