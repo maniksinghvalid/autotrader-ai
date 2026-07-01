@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Optional
 
 from autotrader.broker import Broker
 from autotrader.config import RiskConfig, load_risk_config
-from autotrader.domain import OrderRequest, OrderState, Signal
+from autotrader.domain import BrokerError, OrderRequest, OrderState, Signal
 from autotrader.rebalance import compute_plan
 from autotrader.risk_check import evaluate as risk_evaluate, RiskAction
 from autotrader.risk_core import evaluate
@@ -155,7 +155,7 @@ class TradeEngine:
             logger.warning("risk core rejected: %s", decision.reason)
             return TickResult("REJECTED_BY_RISK", decision.reason)
 
-        ack = self._router.submit(req)
+        ack = self._submit_with_escalation(req, snap, price)
         if self._db:
             self._db.record_trade(
                 client_order_id=ack.client_order_id, symbol=req.symbol, side=req.side,
@@ -182,6 +182,61 @@ class TradeEngine:
             return "MARKET", None
         from autotrader.limit_pricing import capped_limit_price  # local: keep import cheap
         return "LIMIT", capped_limit_price(side, ref_price, self._cfg)
+
+    def _submit_with_escalation(self, req: OrderRequest, snap, ref_price: float):
+        """Submit a capped LIMIT; if it rests unfilled, cancel + re-peg once to the
+        current touch; if still unfilled, submit MARKET so a risk exit completes.
+        Each stage re-runs the risk core (it stays the sole gate) and uses a distinct
+        client_order_id so the router does not dedupe. Only used when the flag is on
+        and the order is a LIMIT; MARKET/TRAILING_STOP requests submit once as before."""
+        if req.order_type != "LIMIT":
+            return self._router.submit(req)
+        ack = self._router.submit(req)
+
+        def _still_working(a) -> bool:
+            working = {o.client_order_id for o in self._b.get_open_orders()}
+            return a.client_order_id in working
+
+        if not _still_working(ack):
+            return ack   # marketable limit filled (or terminal) on the first pass
+
+        # Stage 2: cancel the resting limit, re-peg to the CURRENT touch.
+        if ack.broker_order_id:
+            try:
+                self._b.cancel_order(ack.broker_order_id)
+            except BrokerError as e:
+                logger.warning("escalation: cancel %s failed: %s", ack.broker_order_id, e)
+        from autotrader.limit_pricing import capped_limit_price
+        cur = self._b.get_quote(req.symbol) or ref_price
+        peg_cid = req.client_order_id + "-peg"
+        peg = OrderRequest(symbol=req.symbol, side=req.side, qty=req.qty,
+                           order_type="LIMIT",
+                           limit_price=capped_limit_price(req.side, cur, self._cfg),
+                           client_order_id=peg_cid, option=req.option,
+                           position_effect=req.position_effect,
+                           correlation_id=req.correlation_id)
+        if evaluate(peg, snap, self._cfg, ref_price=cur).approved:
+            ack = self._router.submit(peg)
+            if not _still_working(ack):
+                return ack
+
+        # Stage 3: MARKET fallback so the order (esp. a risk exit) completes.
+        if ack.broker_order_id:
+            try:
+                self._b.cancel_order(ack.broker_order_id)
+            except BrokerError as e:
+                logger.warning("escalation: cancel %s failed: %s", ack.broker_order_id, e)
+        mkt_cid = req.client_order_id + "-mkt"
+        mkt = OrderRequest(symbol=req.symbol, side=req.side, qty=req.qty,
+                           order_type="MARKET", limit_price=None,
+                           client_order_id=mkt_cid, option=req.option,
+                           position_effect=req.position_effect,
+                           correlation_id=req.correlation_id)
+        decision = evaluate(mkt, snap, self._cfg, ref_price=cur)
+        if not decision.approved:
+            logger.warning("escalation: MARKET fallback rejected by risk: %s", decision.reason)
+            return ack
+        return self._router.submit(mkt)
 
     def _route_overlay(self, signal: Signal, snap) -> TickResult:
         """Expand an overlay signal into legs and place each through the audited
@@ -429,7 +484,7 @@ class TradeEngine:
             logger.warning("rebalance rejected %s %s %d: %s", trade.side,
                            trade.symbol, trade.qty, decision.reason)
             return TickResult("REJECTED_BY_RISK", decision.reason)
-        ack = self._router.submit(req)
+        ack = self._submit_with_escalation(req, snap, ref_price)
         if self._db:
             self._db.record_trade(
                 client_order_id=ack.client_order_id, symbol=req.symbol,
