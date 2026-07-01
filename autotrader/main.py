@@ -155,11 +155,11 @@ class TradeEngine:
             logger.warning("risk core rejected: %s", decision.reason)
             return TickResult("REJECTED_BY_RISK", decision.reason)
 
-        ack = self._submit_with_escalation(req, snap, price)
+        ack, term = self._submit_with_escalation(req, snap, price)
         if self._db:
             self._db.record_trade(
                 client_order_id=ack.client_order_id, symbol=req.symbol, side=req.side,
-                qty=req.qty, order_type=req.order_type, limit_price=req.limit_price,
+                qty=req.qty, order_type=term.order_type, limit_price=term.limit_price,
                 broker_order_id=ack.broker_order_id, state=ack.state.value,
             )
         if ack.state is OrderState.UNKNOWN:
@@ -188,17 +188,23 @@ class TradeEngine:
         current touch; if still unfilled, submit MARKET so a risk exit completes.
         Each stage re-runs the risk core (it stays the sole gate) and uses a distinct
         client_order_id so the router does not dedupe. Only used when the flag is on
-        and the order is a LIMIT; MARKET/TRAILING_STOP requests submit once as before."""
+        and the order is a LIMIT; MARKET/TRAILING_STOP requests submit once as before.
+
+        Returns (ack, terminal_req): terminal_req is the OrderRequest whose submission
+        produced the returned ack (req, the re-pegged `peg`, or the fallback `mkt`),
+        so callers can record the DB row's order_type/limit_price from the request
+        that actually produced the ack rather than the original req."""
         if req.order_type != "LIMIT":
-            return self._router.submit(req)
+            return self._router.submit(req), req
         ack = self._router.submit(req)
+        ack_req = req
 
         def _still_working(a) -> bool:
             working = {o.client_order_id for o in self._b.get_open_orders()}
             return a.client_order_id in working
 
         if not _still_working(ack):
-            return ack   # marketable limit filled (or terminal) on the first pass
+            return ack, req   # marketable limit filled (or terminal) on the first pass
 
         # Stage 2: cancel the resting limit, re-peg to the CURRENT touch.
         if ack.broker_order_id:
@@ -217,8 +223,9 @@ class TradeEngine:
                            correlation_id=req.correlation_id)
         if evaluate(peg, snap, self._cfg, ref_price=cur).approved:
             ack = self._router.submit(peg)
+            ack_req = peg
             if not _still_working(ack):
-                return ack
+                return ack, peg
 
         # Stage 3: MARKET fallback so the order (esp. a risk exit) completes.
         if ack.broker_order_id:
@@ -235,8 +242,8 @@ class TradeEngine:
         decision = evaluate(mkt, snap, self._cfg, ref_price=cur)
         if not decision.approved:
             logger.warning("escalation: MARKET fallback rejected by risk: %s", decision.reason)
-            return ack
-        return self._router.submit(mkt)
+            return ack, ack_req
+        return self._router.submit(mkt), mkt
 
     def _route_overlay(self, signal: Signal, snap) -> TickResult:
         """Expand an overlay signal into legs and place each through the audited
@@ -484,12 +491,12 @@ class TradeEngine:
             logger.warning("rebalance rejected %s %s %d: %s", trade.side,
                            trade.symbol, trade.qty, decision.reason)
             return TickResult("REJECTED_BY_RISK", decision.reason)
-        ack = self._submit_with_escalation(req, snap, ref_price)
+        ack, term = self._submit_with_escalation(req, snap, ref_price)
         if self._db:
             self._db.record_trade(
                 client_order_id=ack.client_order_id, symbol=req.symbol,
-                side=req.side, qty=req.qty, order_type=req.order_type,
-                limit_price=req.limit_price, broker_order_id=ack.broker_order_id,
+                side=req.side, qty=req.qty, order_type=term.order_type,
+                limit_price=term.limit_price, broker_order_id=ack.broker_order_id,
                 state=ack.state.value)
         if ack.state is OrderState.UNKNOWN:
             return TickResult("ORDER_UNKNOWN", ack.client_order_id)
