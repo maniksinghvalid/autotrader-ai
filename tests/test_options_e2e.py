@@ -233,3 +233,64 @@ def test_spread_short_leg_rejected_leaves_loud_long_residual(tmp_path):
     held = {p.symbol: p.qty for p in b.get_account().positions}
     assert held["US.AAPL260721P200000"] == 1            # long put filled
     assert "US.AAPL260721P185000" not in held           # short put never opened
+
+
+# ---------------------------------------------------------------------------
+# §2 Task 5 — engine pre-checks the hedge group before the stock leg;
+# no naked entry (§2.A)
+# ---------------------------------------------------------------------------
+
+from autotrader.domain import OrderAck, OrderState, OrderRequest
+
+
+class _RejectHedgeBroker(SimBroker):
+    """Fills stock (option=None) but REJECTS any OPEN option leg — models a
+    hedge that cannot be placed."""
+    def place_order(self, req):
+        if req.option is not None and req.position_effect == "OPEN":
+            self._seq += 1
+            return OrderAck(req.client_order_id, f"sim-{self._seq}",
+                            OrderState.REJECTED, {})
+        return super().place_order(req)
+
+
+def _pp_entry(monkeypatch):
+    from autotrader.options import overlays
+    from autotrader.options.overlays import OverlayDef, LegSpec
+    monkeypatch.setitem(
+        overlays.REGISTRY, OverlayType.PROTECTIVE_PUT,
+        OverlayDef(requires_underlying=False, opens_stock=True,
+                   legs=(LegSpec(right="PUT", side="BUY"),)))
+
+
+def test_hedge_unplaceable_blocks_stock_entry_no_naked(tmp_path, monkeypatch):
+    _pp_entry(monkeypatch)
+    b = _RejectHedgeBroker(
+        quotes={"US.AAPL": 200.0, "US.AAPL260721P190000": 1.4},
+        cash=1_000_000, option_chains=_chains())
+    eng = _engine(b, _cfg(allowed_overlays=frozenset({"PROTECTIVE_PUT"}),
+                          max_order_notional=25_000), tmp_path)
+    res = eng.submit_external_signal(
+        Signal("US.AAPL", "BUY", 0.7, "Protective Put",
+               overlay=OverlayType.PROTECTIVE_PUT))
+    # A rejected hedge in a plan with a stock leg -> pre-check fails,
+    # NOTHING placed. No naked stock.
+    assert res.action == "OVERLAY_HEDGE_UNPLACEABLE", res
+    held = {p.symbol: p.qty for p in b.get_account().positions}
+    assert held.get("US.AAPL", 0) == 0        # stock NEVER bought
+    assert "US.AAPL260721P190000" not in held
+
+
+def test_hedge_placeable_then_stock_entry_places_both(tmp_path, monkeypatch):
+    _pp_entry(monkeypatch)
+    b = SimBroker(quotes={"US.AAPL": 200.0, "US.AAPL260721P190000": 1.4},
+                  cash=1_000_000, option_chains=_chains())
+    eng = _engine(b, _cfg(allowed_overlays=frozenset({"PROTECTIVE_PUT"}),
+                          max_order_notional=25_000), tmp_path)
+    res = eng.submit_external_signal(
+        Signal("US.AAPL", "BUY", 0.7, "Protective Put",
+               overlay=OverlayType.PROTECTIVE_PUT))
+    assert res.action == "OVERLAY_PLACED", res
+    held = {p.symbol: p.qty for p in b.get_account().positions}
+    assert held["US.AAPL"] == 100                 # stock bought after hedge
+    assert held["US.AAPL260721P190000"] == 1      # protective put filled

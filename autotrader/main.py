@@ -19,12 +19,15 @@ from autotrader.risk_core import evaluate
 from autotrader.router import OrderRouter
 from autotrader.sizing import size_position
 from autotrader.strategies.threshold import ThresholdStrategy
+from autotrader.watchdog import backoff_seconds
 
 if TYPE_CHECKING:
     from autotrader.db import DB
     from autotrader.lifecycle import EntryGate
 
 logger = logging.getLogger("autotrader.engine")
+
+_HEDGE_CONFIRM_ATTEMPTS = 3   # bounded live fill-poll (paper fills at ack: 0 polls)
 
 
 @dataclass(frozen=True)
@@ -36,7 +39,9 @@ class TickResult:
 class TradeEngine:
     def __init__(self, broker: Broker, strategy: ThresholdStrategy, cfg: RiskConfig,
                  order_qty: int, audit_path: str, db: "Optional[DB]" = None,
-                 entry_gate: "Optional[EntryGate]" = None, today_fn=None):
+                 entry_gate: "Optional[EntryGate]" = None, today_fn=None,
+                 hedge_confirm_attempts: int = _HEDGE_CONFIRM_ATTEMPTS,
+                 hedge_confirm_sleep=None):
         self._b = broker
         self._strat = strategy
         self._cfg = cfg
@@ -46,6 +51,12 @@ class TradeEngine:
         self._db = db
         self._gate = entry_gate
         self._today_fn = today_fn or date.today
+        self._hedge_confirm_attempts = hedge_confirm_attempts
+        # Injected delay between fill-poll attempts. Defaults to a no-op so unit
+        # tests never really sleep; live wiring passes time.sleep. This is an
+        # order-FILL poll, not an OpenD readiness check (CLAUDE.md), and reuses the
+        # injected-sleep + backoff_seconds pattern already used by watchdog.py.
+        self._hedge_confirm_sleep = hedge_confirm_sleep or (lambda _s: None)
 
     def tick(self) -> TickResult:
         if self._gate is not None and self._gate.halted:
@@ -190,6 +201,9 @@ class TradeEngine:
         coverage = tuple(l.request for l in plan.legs
                          if l.request.side == "BUY" and l.request.position_effect == "OPEN")
 
+        stock_leg = next((l for l in plan.legs if l.request.option is None), None)
+        hedge_legs = [l for l in plan.legs if l.request.option is not None]
+
         last_boid = None
         filled_long = []  # symbols of long legs already filled this overlay
 
@@ -199,11 +213,33 @@ class TradeEngine:
             return TickResult("OVERLAY_RESIDUAL_LONG",
                               f"{plan.correlation_id}:{','.join(filled_long)}")
 
-        for leg in sorted(plan.legs, key=lambda l: 0 if l.request.side == "BUY" else 1):
+        # Submit hedge legs first (BUY-before-SELL so a short is never momentarily
+        # naked), THEN the stock leg last (§2.A inversion). Track whether each hedge
+        # leg CONFIRMED (FILLED) for the §2.B fallback below.
+        hedge_confirmed = {}   # symbol -> bool (True only once confirmed FILLED)
+        hedge_states = {}      # symbol -> observed OrderState at/after placement
+        ordered = sorted(hedge_legs, key=lambda l: 0 if l.request.side == "BUY" else 1)
+        if stock_leg is not None:
+            ordered = ordered + [stock_leg]
+        for leg in ordered:
             req = leg.request
+            is_stock = req.option is None
+            # §2.A — HEDGE-BEFORE-STOCK: hedge legs are ordered ahead of the stock
+            # leg (see `ordered` above), so a rejected/unplaceable hedge leg is
+            # always caught here BEFORE the stock leg is ever reached — no naked
+            # stock is structurally possible. For a plan WITH a stock leg, a hedge
+            # leg failure (risk-rejected or broker-rejected/unknown) reports the
+            # dedicated OVERLAY_HEDGE_UNPLACEABLE action instead of the generic
+            # stock-less codes, and nothing further is submitted.
             decision = evaluate(req, snap, self._cfg, ref_price=leg.quote.premium,
                                 coverage_legs=coverage)
             if not decision.approved:
+                if not is_stock and stock_leg is not None:
+                    logger.warning("overlay %s hedge unplaceable (%s): %s — "
+                                   "skipping stock entry (no naked)",
+                                   plan.correlation_id, req.symbol, decision.reason)
+                    return TickResult("OVERLAY_HEDGE_UNPLACEABLE",
+                                      f"{plan.correlation_id}:{req.symbol}")
                 logger.warning("overlay leg rejected (%s): %s", req.symbol, decision.reason)
                 if filled_long:
                     return _residual(req.symbol, decision.reason)
@@ -216,15 +252,70 @@ class TradeEngine:
                     limit_price=leg.quote.premium, broker_order_id=ack.broker_order_id,
                     state=ack.state.value)
             if ack.state in (OrderState.UNKNOWN, OrderState.REJECTED):
+                if not is_stock and stock_leg is not None:
+                    logger.warning("overlay %s hedge unplaceable (%s): %s — "
+                                   "skipping stock entry (no naked)",
+                                   plan.correlation_id, req.symbol, ack.state.value)
+                    return TickResult("OVERLAY_HEDGE_UNPLACEABLE",
+                                      f"{plan.correlation_id}:{req.symbol}")
                 if filled_long:
                     return _residual(req.symbol, ack.state.value)
                 action = "ORDER_UNKNOWN" if ack.state is OrderState.UNKNOWN else "ORDER_REJECTED"
                 return TickResult(action, ack.client_order_id)
-            if (req.side == "BUY" and req.position_effect == "OPEN"
-                    and ack.state is OrderState.FILLED):
-                filled_long.append(req.symbol)
+            if not is_stock:
+                # §2.B live-safe: FILLED at ack (paper SimBroker) confirms
+                # immediately; a live SUBMITTED ack is confirmed only if a bounded
+                # fill-poll shows it left the open-orders book (async fill).
+                confirmed = self._confirm_hedge_fill(ack, req)
+                hedge_confirmed[req.symbol] = confirmed
+                # observed terminal indicator for the alert: FILLED if confirmed,
+                # else the placement ack state (e.g. SUBMITTED still resting).
+                hedge_states[req.symbol] = (
+                    OrderState.FILLED if confirmed else ack.state)
+                if (req.side == "BUY" and req.position_effect == "OPEN"
+                        and confirmed):
+                    filled_long.append(req.symbol)
+            else:
+                # §2.B — stock leg placed. If it FILLED but any hedge leg is not
+                # CONFIRMED (FILLED), attach the protective trailing stop fallback
+                # and fire an immediate UNHEDGED alert.
+                if ack.state is OrderState.FILLED and hedge_legs and not all(
+                        hedge_confirmed.get(h.request.symbol, False) for h in hedge_legs):
+                    self._handle_unhedged_stock(plan, req, leg.quote.premium,
+                                                signal_id, hedge_confirmed,
+                                                hedge_states)
             last_boid = ack.broker_order_id
         return TickResult("OVERLAY_PLACED", f"{plan.correlation_id}:{last_boid}")
+
+    def _confirm_hedge_fill(self, ack, req) -> bool:
+        """True iff the hedge option leg is confirmed FILLED. FILLED at ack
+        (paper) -> True immediately. Otherwise poll get_open_orders() up to
+        self._hedge_confirm_attempts times; a leg is confirmed once its
+        client_order_id is no longer among the working orders (async live fill).
+        REJECTED/UNKNOWN acks were already handled by the caller before this runs,
+        so a still-resting SUBMITTED after the window returns False -> §2.B fallback.
+        Detection convention matches §3 escalation (client_order_id membership)."""
+        if ack.state is OrderState.FILLED:
+            return True
+
+        def _still_working() -> bool:
+            working = {o.client_order_id for o in self._b.get_open_orders()}
+            return ack.client_order_id in working
+
+        if not _still_working():
+            return True   # already off the book (terminal/filled) at first look
+        for attempt in range(1, self._hedge_confirm_attempts + 1):
+            self._hedge_confirm_sleep(backoff_seconds(attempt))
+            if not _still_working():
+                return True
+        logger.warning("hedge %s still resting after %d fill-poll attempts (%s)",
+                       req.symbol, self._hedge_confirm_attempts, ack.state.value)
+        return False
+
+    def _handle_unhedged_stock(self, plan, stock_req, ref_price, signal_id,
+                               hedge_confirmed, hedge_states) -> None:
+        """§2.B fallback + alert. Filled in Task 6."""
+        return None
 
     def _attach_trailing_stop(self, symbol: str, qty: int, ref_price: float,
                               entry_signal_id: str) -> None:
