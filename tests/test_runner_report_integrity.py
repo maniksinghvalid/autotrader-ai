@@ -4,9 +4,15 @@ _record_perf() must retry the account fetch with capped exponential backoff
 (watchdog.backoff_seconds, injected sleep) while positions_loaded is False,
 and persist gross_exposure=NULL + positions_loaded=False if still unresolved
 after exhausting attempts. No real sleeping — sleep is injected."""
+from datetime import date
+
 from autotrader.db import DB
-from autotrader.domain import AccountSnapshot, Position
+from autotrader.domain import AccountSnapshot, Fill, Position
 from autotrader.runner import SessionRunner
+
+
+def _today_iso():
+    return date.today().isoformat()
 
 
 class _AcctStub:
@@ -59,4 +65,23 @@ def test_record_perf_records_null_gross_when_never_resolved(tmp_path):
     row = db._conn.execute(
         "SELECT gross_exposure FROM performance").fetchone()
     assert row[0] is None
+    db.close()
+
+
+def test_record_perf_computes_realized_and_unrealized(tmp_path):
+    db = DB(str(tmp_path / "r.db"))
+    # Seed fills so realized_from_fills has history: buy 10@100 today, sell 10@110 today.
+    db.record_fills([
+        Fill("f1", "US.AAPL", "BUY", 10, 100.0, _today_iso() + "T14:00:00+00:00"),
+        Fill("f2", "US.AAPL", "SELL", 10, 110.0, _today_iso() + "T15:00:00+00:00"),
+    ])
+    # Open position after: none for AAPL; add a held name for unrealized.
+    br = _AcctStub(fail_times=0,
+                   loaded_positions=[Position("US.MARA", 100, 13.0)],
+                   quotes={"US.MARA": 13.60})
+    _runner(db, br, [])._record_perf()
+    row = db._conn.execute(
+        "SELECT day_pnl, unrealized_pnl FROM performance").fetchone()
+    assert abs(row[0] - 100.0) < 1e-6          # realized from fills
+    assert abs(row[1] - 60.0) < 1e-6           # 100 * (13.60 - 13.00)
     db.close()

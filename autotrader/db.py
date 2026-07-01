@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS drivers (
 _PERFORMANCE_TABLE = """
 CREATE TABLE IF NOT EXISTS performance (
     date           TEXT PRIMARY KEY,
-    day_pnl        REAL NOT NULL,
+    day_pnl        REAL,
     total_assets   REAL NOT NULL,
     cash           REAL NOT NULL,
     gross_exposure REAL,
@@ -128,10 +128,18 @@ class DB:
                 "ALTER TABLE performance ADD COLUMN unrealized_pnl REAL NOT NULL DEFAULT 0")
         # gross_exposure must be nullable to represent "exposure unknown"
         # (positions failed to load); legacy DBs created it NOT NULL.
+        # day_pnl must be nullable to represent "realized unavailable" (reporter
+        # renders '-' rather than a fabricated 0.00); legacy/Task-2-migrated DBs
+        # may still have it NOT NULL, so check both columns independently — a DB
+        # already rebuilt by the gross_exposure migration won't re-trigger on
+        # that clause alone once day_pnl is the only NOT NULL holdout.
         perf_sql = self._conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='performance'"
         ).fetchone()
-        if perf_sql and "gross_exposure REAL NOT NULL" in perf_sql[0]:
+        if perf_sql and (
+            "gross_exposure REAL NOT NULL" in perf_sql[0]
+            or "day_pnl REAL NOT NULL" in perf_sql[0]
+        ):
             self._conn.executescript(
                 "ALTER TABLE performance RENAME TO performance_old;"
                 + _PERFORMANCE_TABLE +

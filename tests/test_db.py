@@ -105,6 +105,58 @@ def test_record_performance_stores_real_gross_when_loaded(tmp_path):
     db.close()
 
 
+def test_legacy_day_pnl_not_null_table_is_rebuilt_nullable(tmp_path):
+    """A DB previously migrated by the Task 2 gross_exposure fix (gross_exposure
+    already nullable) but still carrying the original day_pnl REAL NOT NULL must
+    be rebuilt on open so a NULL day_pnl insert (realized-unavailable) succeeds."""
+    import sqlite3
+    from autotrader.db import DB
+
+    path = str(tmp_path / "legacy.db")
+    raw = sqlite3.connect(path)
+    raw.executescript(
+        "CREATE TABLE performance ("
+        "date TEXT PRIMARY KEY, "
+        "day_pnl REAL NOT NULL, "
+        "total_assets REAL NOT NULL, "
+        "cash REAL NOT NULL, "
+        "gross_exposure REAL, "
+        "unrealized_pnl REAL NOT NULL DEFAULT 0, "
+        "updated_at TEXT NOT NULL"
+        ");"
+    )
+    raw.execute(
+        "INSERT INTO performance "
+        "(date,day_pnl,total_assets,cash,gross_exposure,unrealized_pnl,updated_at) "
+        "VALUES ('2026-06-01',5.0,1000.0,900.0,NULL,0.0,'2026-06-01T20:30:00+00:00')")
+    raw.commit()
+    raw.close()
+
+    db = DB(path)
+    # Pre-existing row must survive the rebuild.
+    row = db._conn.execute(
+        "SELECT day_pnl, gross_exposure FROM performance WHERE date='2026-06-01'"
+    ).fetchone()
+    assert row == (5.0, None)
+    # A NULL day_pnl insert must now succeed (realized unavailable).
+    db._conn.execute(
+        "INSERT INTO performance "
+        "(date,day_pnl,total_assets,cash,gross_exposure,unrealized_pnl,updated_at) "
+        "VALUES ('2026-06-02',NULL,1100.0,950.0,NULL,0.0,'2026-06-02T20:30:00+00:00')")
+    db._conn.commit()
+    row2 = db._conn.execute(
+        "SELECT day_pnl FROM performance WHERE date='2026-06-02'").fetchone()
+    assert row2[0] is None
+    db.close()
+
+    # Idempotent: reopening the now-fully-nullable DB must not re-fire the rebuild
+    # (and must not lose data).
+    db2 = DB(path)
+    count = db2._conn.execute("SELECT COUNT(*) FROM performance").fetchone()[0]
+    assert count == 2
+    db2.close()
+
+
 def test_record_halt_and_resolve(tmp_path):
     db = _db(tmp_path)
     halt_id = db.record_halt("daily loss limit breached")

@@ -13,10 +13,12 @@ explicit lifecycle jobs (sync / cancel_all)."""
 from __future__ import annotations
 
 import logging
+from datetime import date as _date
 from typing import Callable
 
 from autotrader.clock import Clock
 from autotrader.lifecycle import EntryGate, ground_truth_sync
+from autotrader.reporting.pnl import realized_from_fills
 from autotrader.scheduler import (
     LifecycleScheduler, PRE_OPEN_SYNC, ENTRY_OPEN, RISK_SWEEP, EOD_FLATTEN,
     REBALANCE, RISK_CHECK_MID, RISK_CHECK_LATE, EOD_REPORT,
@@ -60,12 +62,34 @@ class SessionRunner:
             attempt += 1
         return snap
 
+    def _compute_unrealized(self, snap) -> float:
+        """Σ qty × (current_quote − avg_cost) over open positions using the
+        same snapshot. Positions with no live quote are skipped."""
+        total = 0.0
+        for p in snap.positions:
+            quote = self._broker.get_quote(p.symbol)
+            if quote is not None:
+                total += p.qty * (quote - p.avg_price)
+        return total
+
+    def _compute_realized(self) -> "float | None":
+        rows = self._db._conn.execute(
+            "SELECT symbol, side, qty, price, ts FROM fills").fetchall()
+        return realized_from_fills(rows, _date.today().isoformat())
+
     def _record_perf(self) -> None:
         snap = self._fetch_account_for_perf()
         gross = snap.gross_exposure() if snap.positions_loaded else None
+        # Realized: prefer our own fills-derived figure; fall back to broker day_pnl.
+        realized = self._compute_realized()
+        day_pnl = realized if realized is not None else snap.day_pnl
+        # Unrealized: recompute from positions × quote only when positions loaded;
+        # otherwise keep the broker figure (reporter renders it 'unavailable').
+        unreal = self._compute_unrealized(snap) if snap.positions_loaded \
+            else snap.unrealized_pnl
         self._db.record_performance(
-            snap.day_pnl, snap.total_assets, snap.cash, gross,
-            snap.unrealized_pnl, positions_loaded=snap.positions_loaded)
+            day_pnl, snap.total_assets, snap.cash, gross, unreal,
+            positions_loaded=snap.positions_loaded)
 
     def _run_job(self, job: str, now) -> None:
         if job == PRE_OPEN_SYNC:

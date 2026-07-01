@@ -182,6 +182,18 @@ class EODReporter:
         pct = (d.gross_exposure / d.total_assets * 100) if d.total_assets else 0.0
         return f"{pct:.0f}%"
 
+    @staticmethod
+    def _realized_text(d: ReportData) -> str:
+        return "—" if d.realized_pnl is None else f"{d.realized_pnl:+,.2f}"
+
+    @staticmethod
+    def _unrealized_text(d: ReportData) -> str:
+        if d.gross_exposure is None:          # snapshot stale -> not trustworthy
+            return "unavailable"
+        if d.unrealized_pnl is None:
+            return "—"
+        return f"{d.unrealized_pnl:+,.2f}"
+
     _EMOJI = {"Covered Call": "🟢", "Covered Call (existing shares)": "🟢",
               "Protective Put": "🛡️", "Collar": "🔵", "Bear Put Spread": "🔻",
               "LEAP": "🚀", "PMCC / Call Diagonal": "🚀",
@@ -233,10 +245,10 @@ class EODReporter:
     def _header_lines(self, d: ReportData) -> list:
         lines = [f"Session summary — {d.date_label} ({d.trading_env})"]
         if d.total_assets is not None:
-            realized = d.realized_pnl or 0.0
-            unreal = "" if d.unrealized_pnl is None else f" · Unrealized {d.unrealized_pnl:+,.2f}"
+            pct = "" if d.realized_pnl is None else f" ({self._pnl_pct(d):+.2f}%)"
             lines.append(
-                f"Realized {realized:+,.2f} ({self._pnl_pct(d):+.2f}%){unreal} · "
+                f"Realized {self._realized_text(d)}{pct} · "
+                f"Unrealized {self._unrealized_text(d)} · "
                 f"Assets {d.total_assets:,.0f} · Cash {d.cash:,.0f} · "
                 f"Gross exp {self._gross_text(d)}")
         cf = d.capital_flow
@@ -265,10 +277,10 @@ class EODReporter:
         blocks = [{"type": "header", "text": {"type": "plain_text",
                    "text": f"Session summary — {d.date_label} ({d.trading_env})"}}]
         if d.total_assets is not None:
-            realized = d.realized_pnl or 0.0
+            pct = "" if d.realized_pnl is None else f" ({self._pnl_pct(d):+.2f}%)"
             fields = [
-                {"type": "mrkdwn", "text": f"*Realized*\n{realized:+,.2f} ({self._pnl_pct(d):+.2f}%)"},
-                {"type": "mrkdwn", "text": f"*Unrealized*\n{(d.unrealized_pnl or 0.0):+,.2f}"},
+                {"type": "mrkdwn", "text": f"*Realized*\n{self._realized_text(d)}{pct}"},
+                {"type": "mrkdwn", "text": f"*Unrealized*\n{self._unrealized_text(d)}"},
                 {"type": "mrkdwn", "text": f"*Total assets*\n{d.total_assets:,.0f}"},
                 {"type": "mrkdwn", "text": f"*Cash*\n{d.cash:,.0f}"},
                 {"type": "mrkdwn", "text": f"*Gross exp.*\n{self._gross_text(d)}"},

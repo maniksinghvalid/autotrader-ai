@@ -265,3 +265,30 @@ def test_render_null_gross_shows_unavailable(tmp_path):
         for f in b["fields"])
     assert "exposure unavailable — snapshot stale" in flat
     db.close()
+
+
+def test_render_realized_dash_when_null(tmp_path):
+    db = DB(str(tmp_path / "r.db"))
+    db._conn.execute(
+        "INSERT INTO performance "
+        "(date,day_pnl,total_assets,cash,gross_exposure,unrealized_pnl,updated_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (_DAY, None, 100000.0, 100000.0, 66000.0, 0.0, _DAY + "T20:30:00+00:00"))
+    db._conn.commit()
+    text = _reporter(db, lambda u, p: 200)._render(
+        _reporter(db, lambda u, p: 200)._gather(_now()))["text"]
+    assert "Realized —" in text
+    assert "Realized +0.00" not in text            # no defaulted realized 0.00
+
+
+def test_render_unrealized_unavailable_when_stale(tmp_path):
+    db = DB(str(tmp_path / "r.db"))
+    db._conn.execute(
+        "INSERT INTO performance "
+        "(date,day_pnl,total_assets,cash,gross_exposure,unrealized_pnl,updated_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (_DAY, 5.0, 100000.0, 100000.0, None, 0.0, _DAY + "T20:30:00+00:00"))
+    db._conn.commit()
+    text = _reporter(db, lambda u, p: 200)._render(
+        _reporter(db, lambda u, p: 200)._gather(_now()))["text"]
+    assert "Unrealized unavailable" in text
