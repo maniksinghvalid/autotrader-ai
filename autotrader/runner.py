@@ -21,6 +21,7 @@ from autotrader.scheduler import (
     LifecycleScheduler, PRE_OPEN_SYNC, ENTRY_OPEN, RISK_SWEEP, EOD_FLATTEN,
     REBALANCE, RISK_CHECK_MID, RISK_CHECK_LATE, EOD_REPORT,
 )
+from autotrader.watchdog import backoff_seconds
 
 logger = logging.getLogger("autotrader.runner")
 
@@ -42,11 +43,29 @@ class SessionRunner:
         self._inbox = signal_inbox
         self._reporter = reporter
 
-    def _record_perf(self) -> None:
+    def _fetch_account_for_perf(self, max_attempts: int = 4):
+        """Fetch the account snapshot for the performance row, retrying with
+        capped exponential backoff while the position query keeps failing
+        (positions_loaded is False). Returns the first loaded snapshot, or the
+        last snapshot after exhausting attempts. Injected sleep — never a bare
+        time.sleep as a readiness check (CLAUDE.md)."""
         snap = self._broker.get_account()
-        self._db.record_performance(snap.day_pnl, snap.total_assets,
-                                    snap.cash, snap.gross_exposure(),
-                                    snap.unrealized_pnl)
+        attempt = 1
+        while not snap.positions_loaded and attempt < max_attempts:
+            delay = backoff_seconds(attempt)
+            logger.warning("record_perf: positions unloaded — backoff %.1fs "
+                           "(attempt %d/%d)", delay, attempt, max_attempts)
+            self._sleep(delay)
+            snap = self._broker.get_account()
+            attempt += 1
+        return snap
+
+    def _record_perf(self) -> None:
+        snap = self._fetch_account_for_perf()
+        gross = snap.gross_exposure() if snap.positions_loaded else None
+        self._db.record_performance(
+            snap.day_pnl, snap.total_assets, snap.cash, gross,
+            snap.unrealized_pnl, positions_loaded=snap.positions_loaded)
 
     def _run_job(self, job: str, now) -> None:
         if job == PRE_OPEN_SYNC:
