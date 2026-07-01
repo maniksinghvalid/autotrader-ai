@@ -30,6 +30,13 @@ logger = logging.getLogger("autotrader.engine")
 _HEDGE_CONFIRM_ATTEMPTS = 3   # bounded live fill-poll (paper fills at ack: 0 polls)
 
 
+def _post_slack(url, payload):
+    # Lazy import keeps reporting (and its stdlib urllib use) out of the hot
+    # import path for tests that never touch alerts.
+    from autotrader.reporting.eod_reporter import post_slack
+    return post_slack(url, payload)
+
+
 @dataclass(frozen=True)
 class TickResult:
     action: str
@@ -41,7 +48,8 @@ class TradeEngine:
                  order_qty: int, audit_path: str, db: "Optional[DB]" = None,
                  entry_gate: "Optional[EntryGate]" = None, today_fn=None,
                  hedge_confirm_attempts: int = _HEDGE_CONFIRM_ATTEMPTS,
-                 hedge_confirm_sleep=None):
+                 hedge_confirm_sleep=None,
+                 alert_url: "Optional[str]" = None, alert_post=None):
         self._b = broker
         self._strat = strategy
         self._cfg = cfg
@@ -57,6 +65,8 @@ class TradeEngine:
         # order-FILL poll, not an OpenD readiness check (CLAUDE.md), and reuses the
         # injected-sleep + backoff_seconds pattern already used by watchdog.py.
         self._hedge_confirm_sleep = hedge_confirm_sleep or (lambda _s: None)
+        self._alert_url = alert_url
+        self._alert_post = alert_post
 
     def tick(self) -> TickResult:
         if self._gate is not None and self._gate.halted:
@@ -314,8 +324,43 @@ class TradeEngine:
 
     def _handle_unhedged_stock(self, plan, stock_req, ref_price, signal_id,
                                hedge_confirmed, hedge_states) -> None:
-        """§2.B fallback + alert. Filled in Task 6."""
-        return None
+        """§2.B: the stock leg FILLED but its hedge is NOT confirmed — no hedge leg
+        reached FILLED within the bounded fill-poll (still resting SUBMITTED, or
+        REJECTED/UNKNOWN). (1) Attach the protective trailing-stop as a fallback risk
+        control via the existing audited path, and (2) fire an immediate
+        execution-time UNHEDGED Slack alert that names the ACTUAL observed terminal
+        state of each unconfirmed leg. NEVER raises into the loop."""
+        # (1) protective trailing-stop fallback (idempotent at the router via cid).
+        self._attach_trailing_stop(stock_req.symbol, stock_req.qty, ref_price,
+                                   signal_id)
+        # (2) immediate UNHEDGED alert (outbound-only; no broker handle). Render the
+        # real state observed per unconfirmed leg (e.g. "…P190000=SUBMITTED"), so a
+        # live "still resting" reads distinctly from a paper "REJECTED".
+        unconfirmed = [h.request.symbol for h in plan.legs
+                       if h.request.option is not None
+                       and not hedge_confirmed.get(h.request.symbol, False)]
+        def _state_label(sym: str) -> str:
+            st = hedge_states.get(sym)
+            return st.value if st is not None else "UNFILLED"
+        leg_states = ", ".join(f"{s}={_state_label(s)}" for s in unconfirmed)
+        logger.error("UNHEDGED overlay %s: stock %s filled, hedge not confirmed "
+                     "FILLED after fill-poll (%s)",
+                     plan.overlay.value, stock_req.symbol, leg_states)
+        if self._alert_url is None:
+            return
+        post = self._alert_post or _post_slack
+        text = (f"⚠ UNHEDGED — {stock_req.symbol} stock entry filled but the "
+                f"intended {plan.overlay.value} hedge is not confirmed FILLED "
+                f"(unfilled after the bounded fill-poll). "
+                f"Unconfirmed leg(s): {leg_states}. "
+                f"Fallback trailing-stop attached.")
+        payload = {"text": text}
+        try:
+            status = post(self._alert_url, payload)
+            if not (200 <= status < 300):
+                logger.error("UNHEDGED alert POST non-2xx: %s", status)
+        except Exception as e:   # never raise into the trading loop
+            logger.error("UNHEDGED alert POST failed: %s", e)
 
     def _attach_trailing_stop(self, symbol: str, qty: int, ref_price: float,
                               entry_signal_id: str) -> None:
@@ -573,8 +618,10 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
     from autotrader.runner import SessionRunner
 
     gate = EntryGate(enabled=False)  # entries open at 09:45 via the scheduler
+    slack_url = os.getenv("AUTOTRADER_SLACK_WEBHOOK_URL")
     engine = TradeEngine(broker, strat, cfg, order_qty=int(os.getenv("ORDER_QTY", "1")),
-                         audit_path=audit, db=db, entry_gate=gate)
+                         audit_path=audit, db=db, entry_gate=gate,
+                         alert_url=slack_url)
     watchdog = Watchdog(
         health_check=broker.heartbeat,
         reconcile=lambda: ground_truth_sync(broker, db),
@@ -588,7 +635,6 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
                             on_targets=db.upsert_target_weights)
         logger.info("external-signal inbox at %s", inbox_dir)
     reporter = None
-    slack_url = os.getenv("AUTOTRADER_SLACK_WEBHOOK_URL")
     if slack_url:
         from autotrader.reporting.eod_reporter import EODReporter
         reporter = EODReporter(db=db, webhook_url=slack_url,

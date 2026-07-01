@@ -64,13 +64,18 @@ class ReportData:
     positions: Tuple[Tuple[str, int], ...]
 
 
-def _default_post(url: str, payload: dict, *, timeout: float = 10.0) -> int:
-    """POST the payload as JSON and return the HTTP status code."""
+def post_slack(url: str, payload: dict, *, timeout: float = 10.0) -> int:
+    """POST the payload as JSON to a Slack webhook; return the HTTP status.
+    The single outbound Slack mechanism, reused by the EOD reporter AND the
+    execution-time UNHEDGED alert. Holds no broker handle (privilege sep.)."""
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url, data=data, headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec - URL from config
         return resp.status
+
+
+_default_post = post_slack   # backward-compatible alias for the class default
 
 
 class EODReporter:

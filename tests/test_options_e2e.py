@@ -294,3 +294,155 @@ def test_hedge_placeable_then_stock_entry_places_both(tmp_path, monkeypatch):
     held = {p.symbol: p.qty for p in b.get_account().positions}
     assert held["US.AAPL"] == 100                 # stock bought after hedge
     assert held["US.AAPL260721P190000"] == 1      # protective put filled
+
+
+# ---------------------------------------------------------------------------
+# fallback trailing-stop + immediate Slack UNHEDGED alert (§2.B)
+# ---------------------------------------------------------------------------
+
+
+class _RestingHedgeBroker(SimBroker):
+    """Fills stock (option=None) but leaves any OPEN option leg RESTING
+    (SUBMITTED, never FILLED) — models a venue that does not fill options.
+    The order stays in _open across every get_open_orders() poll, so the
+    bounded fill-poll in _confirm_hedge_fill exhausts and the hedge is
+    unconfirmed."""
+    def place_order(self, req):
+        if req.option is not None and req.position_effect == "OPEN":
+            if req.client_order_id in self._acks_by_cid:
+                return self._acks_by_cid[req.client_order_id]
+            self._seq += 1
+            boid = f"sim-{self._seq}"
+            ack = OrderAck(req.client_order_id, boid, OrderState.SUBMITTED, {})
+            self._open[boid] = ack
+            self._acks_by_cid[req.client_order_id] = ack
+            return ack
+        return super().place_order(req)
+
+
+class _AsyncFillHedgeBroker(SimBroker):
+    """Models a LIVE venue: the OPEN option leg acks SUBMITTED at placement
+    and then FILLS asynchronously — it is present in the FIRST get_open_orders()
+    poll and absent thereafter (the bounded fill-poll observes it leave the
+    book). The stock leg (option=None) fills immediately via super()."""
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self._opt_polls = 0
+
+    def place_order(self, req):
+        if req.option is not None and req.position_effect == "OPEN":
+            if req.client_order_id in self._acks_by_cid:
+                return self._acks_by_cid[req.client_order_id]
+            self._seq += 1
+            boid = f"sim-{self._seq}"
+            ack = OrderAck(req.client_order_id, boid, OrderState.SUBMITTED, {})
+            self._open[boid] = ack           # present in the first poll
+            self._acks_by_cid[req.client_order_id] = ack
+            return ack
+        return super().place_order(req)
+
+    def get_open_orders(self):
+        # First poll shows the resting option order; the next poll shows it
+        # filled (gone from the book) — an async live fill within the window.
+        orders = super().get_open_orders()
+        self._opt_polls += 1
+        if self._opt_polls >= 2:
+            # after the first poll, the SUBMITTED option order "filled" and
+            # left the book (async live fill); a resting -stop, if any, stays.
+            self._open = {b: a for b, a in self._open.items()
+                          if a.state is not OrderState.SUBMITTED}
+            return list(self._open.values())
+        return orders
+
+
+def test_stock_filled_hedge_unconfirmed_attaches_stop_and_alerts(tmp_path, monkeypatch):
+    _pp_entry(monkeypatch)
+    b = _RestingHedgeBroker(
+        quotes={"US.AAPL": 200.0, "US.AAPL260721P190000": 1.4},
+        cash=1_000_000, option_chains=_chains())
+    alerts = []
+    strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=1.0,
+                                             stop_loss_pct=0.05, take_profit_pct=0.10,
+                                             confidence=0.7))
+    eng = TradeEngine(
+        b, strat, _cfg(allowed_overlays=frozenset({"PROTECTIVE_PUT"}),
+                       trailing_stop_pct=5.0, max_order_notional=25_000),
+        order_qty=10, audit_path=str(tmp_path / "audit.jsonl"),
+        today_fn=lambda: ASOF,
+        hedge_confirm_attempts=2, hedge_confirm_sleep=lambda _s: None,
+        alert_url="https://hooks.slack.test/x",
+        alert_post=lambda url, payload: (alerts.append(payload) or 200))
+    res = eng.submit_external_signal(
+        Signal("US.AAPL", "BUY", 0.7, "Protective Put",
+               overlay=OverlayType.PROTECTIVE_PUT))
+    assert res.action == "OVERLAY_PLACED", res
+    held = {p.symbol: p.qty for p in b.get_account().positions}
+    assert held["US.AAPL"] == 100                     # stock filled
+    # Two orders now REST: the never-filling hedge AND the protective trailing
+    # stop attached as the fallback (SimBroker rests every TRAILING_STOP). Both
+    # are OrderAcks; make_client_order_id hashes cids (at-<sha1>), so we count
+    # rather than grep the cid. A TRAILING_STOP fill-fallback was added -> +1.
+    open_after = b.get_open_orders()
+    assert len(open_after) == 2                        # resting hedge + fallback stop
+    # exactly one UNHEDGED alert fired, naming symbol/overlay/reason
+    assert len(alerts) == 1
+    txt = alerts[0]["text"]
+    assert "UNHEDGED" in txt
+    assert "US.AAPL" in txt
+    assert "PROTECTIVE_PUT" in txt
+    # the reason: hedge not confirmed FILLED after the bounded fill-poll
+    # (state-agnostic token; also holds for a REJECTED hedge)
+    assert "not confirmed" in txt.lower() or "unfilled" in txt.lower()
+
+
+def test_stock_filled_hedge_async_fills_within_poll_no_alert(tmp_path, monkeypatch):
+    # LIVE model: hedge acks SUBMITTED then fills on the next fill-poll ->
+    # _confirm_hedge_fill returns True -> hedge CONFIRMED -> NO alert, NO
+    # fallback stop (only the resting hedge could be open; assert no -stop order).
+    _pp_entry(monkeypatch)
+    b = _AsyncFillHedgeBroker(
+        quotes={"US.AAPL": 200.0, "US.AAPL260721P190000": 1.4},
+        cash=1_000_000, option_chains=_chains())
+    alerts = []
+    strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=1.0,
+                                             stop_loss_pct=0.05, take_profit_pct=0.10,
+                                             confidence=0.7))
+    eng = TradeEngine(
+        b, strat, _cfg(allowed_overlays=frozenset({"PROTECTIVE_PUT"}),
+                       trailing_stop_pct=5.0, max_order_notional=25_000),
+        order_qty=10, audit_path=str(tmp_path / "audit.jsonl"),
+        today_fn=lambda: ASOF,
+        hedge_confirm_attempts=3, hedge_confirm_sleep=lambda _s: None,
+        alert_url="https://hooks.slack.test/x",
+        alert_post=lambda url, payload: (alerts.append(payload) or 200))
+    res = eng.submit_external_signal(
+        Signal("US.AAPL", "BUY", 0.7, "Protective Put",
+               overlay=OverlayType.PROTECTIVE_PUT))
+    assert res.action == "OVERLAY_PLACED", res
+    assert alerts == []              # hedge async-filled within the poll -> confirmed
+    # No fallback trailing stop was attached: the hedge left the book on the
+    # async poll and no other order rests. (The async broker drops filled
+    # SUBMITTED orders; a fallback TRAILING_STOP, had one been added, would rest
+    # and show here.)
+    assert b.get_open_orders() == []
+
+
+def test_no_alert_when_hedge_confirmed(tmp_path, monkeypatch):
+    _pp_entry(monkeypatch)
+    b = SimBroker(quotes={"US.AAPL": 200.0, "US.AAPL260721P190000": 1.4},
+                  cash=1_000_000, option_chains=_chains())
+    alerts = []
+    strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=1.0,
+                                             stop_loss_pct=0.05, take_profit_pct=0.10,
+                                             confidence=0.7))
+    eng = TradeEngine(
+        b, strat, _cfg(allowed_overlays=frozenset({"PROTECTIVE_PUT"}), max_order_notional=25_000),
+        order_qty=10, audit_path=str(tmp_path / "audit.jsonl"),
+        today_fn=lambda: ASOF,
+        alert_url="https://hooks.slack.test/x",
+        alert_post=lambda url, payload: (alerts.append(payload) or 200))
+    res = eng.submit_external_signal(
+        Signal("US.AAPL", "BUY", 0.7, "Protective Put",
+               overlay=OverlayType.PROTECTIVE_PUT))
+    assert res.action == "OVERLAY_PLACED", res
+    assert alerts == []              # hedge FILLED -> no alert
