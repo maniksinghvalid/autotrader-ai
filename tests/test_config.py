@@ -52,3 +52,20 @@ def test_loader_reads_sizing_knobs_with_safe_defaults(monkeypatch):
     assert cfg2.risk_per_trade_pct == 0.01
     assert cfg2.confidence_size_floor == 0.4
     assert cfg2.confidence_size_ceil == 1.2
+
+
+def test_loader_reads_limit_order_knobs_with_safe_defaults(monkeypatch):
+    for k in ("RISK_ORDER_CAP_BPS", "RISK_ORDER_CAP_TICKS", "RISK_LIMIT_ORDERS_ENABLED"):
+        monkeypatch.delenv(k, raising=False)
+    cfg = load_risk_config()
+    # DEFAULT OFF -> current MARKET behavior preserved.
+    assert cfg.limit_orders_enabled is False
+    assert cfg.order_cap_bps == 0.0
+    assert cfg.order_cap_ticks == 0.0
+    monkeypatch.setenv("RISK_ORDER_CAP_BPS", "5")       # 5 bps = 0.05% of price
+    monkeypatch.setenv("RISK_ORDER_CAP_TICKS", "2")     # 2 ticks floor for thin names
+    monkeypatch.setenv("RISK_LIMIT_ORDERS_ENABLED", "true")
+    cfg2 = load_risk_config()
+    assert cfg2.limit_orders_enabled is True
+    assert cfg2.order_cap_bps == 5.0
+    assert cfg2.order_cap_ticks == 2.0

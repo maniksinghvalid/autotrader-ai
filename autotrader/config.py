@@ -54,6 +54,14 @@ class RiskConfig:
     # premium at NLV*pct/2 (200% stop => max loss 2x premium). max_option_premium_per_trade
     # remains an OPTIONAL absolute dollar ceiling (0 = off); the tighter of the two binds.
     option_max_risk_pct: float = 0.02
+    # --- Protective limit orders (additive; DEFAULT-OFF => current MARKET behavior).
+    # HUMAN-REVIEW risk params. When limit_orders_enabled is False the engine emits
+    # the exact MARKET orders it does today. When True, entries/rebalance/option legs
+    # are submitted as capped marketable limits: cap = max(order_cap_bps/1e4 * price,
+    # order_cap_ticks * tick). Trailing-stop exits are unaffected. ---
+    limit_orders_enabled: bool = False
+    order_cap_bps: float = 0.0
+    order_cap_ticks: float = 0.0
 
 
 def _f(name: str, default: float) -> float:
@@ -116,4 +124,7 @@ def load_risk_config() -> RiskConfig:
         option_profit_target_pct=_f("RISK_OPTION_PROFIT_TARGET_PCT", 0.5),
         option_default_contracts=int(_f("RISK_OPTION_DEFAULT_CONTRACTS", 1)),
         option_max_risk_pct=_f("RISK_OPTION_MAX_RISK_PCT", 0.02),
+        limit_orders_enabled=_b("RISK_LIMIT_ORDERS_ENABLED", False),
+        order_cap_bps=_f("RISK_ORDER_CAP_BPS", 0.0),
+        order_cap_ticks=_f("RISK_ORDER_CAP_TICKS", 0.0),
     )
