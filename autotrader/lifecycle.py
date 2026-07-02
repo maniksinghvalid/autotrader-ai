@@ -27,9 +27,18 @@ class SyncResult:
 
 def ground_truth_sync(broker: Broker, db: DB, since: Optional[str] = None) -> SyncResult:
     snap = broker.get_account()
-    db.replace_positions(list(snap.positions))
+    if snap.positions_loaded:
+        db.replace_positions(list(snap.positions))
+    else:
+        # Position query failed — snap.positions is an EMPTY placeholder, not
+        # broker truth. Replacing would wipe the projection with nothing.
+        logger.warning("ground_truth_sync: positions not loaded — projection kept as-is")
     fills = broker.reconcile_fills(since)
-    new = db.record_fills(fills)
+    if fills is None:
+        logger.warning("ground_truth_sync: fills query failed — skipping fill projection")
+        new = 0
+    else:
+        new = db.record_fills(fills)
     reconcile_open_orders(broker, db)
     logger.info("ground_truth_sync: %d position(s), %d new fill(s)",
                 len(snap.positions), new)
@@ -44,8 +53,16 @@ def reconcile_open_orders(broker: Broker, db: DB) -> int:
     the source of truth (read-through cache posture, db.py). Returns the count
     swept. (A stop that triggered+filled is likewise marked CANCELLED here — the
     fill itself is captured by reconcile_fills; the projection only tracks whether
-    the order is still working, which is what get_open_trailing_stop needs.)"""
-    open_ids = {a.broker_order_id for a in broker.get_open_orders()
+    the order is still working, which is what get_open_trailing_stop needs.)
+
+    A None from get_open_orders means the book is UNKNOWN — sweeping then would
+    mark live stops CANCELLED off a failed query, so the reconcile is a logged
+    no-op instead."""
+    open_orders = broker.get_open_orders()
+    if open_orders is None:
+        logger.warning("reconcile_open_orders: open-orders query failed — no-op")
+        return 0
+    open_ids = {a.broker_order_id for a in open_orders
                 if a.broker_order_id is not None}
     swept = 0
     for boid in db.open_trailing_stop_ids():

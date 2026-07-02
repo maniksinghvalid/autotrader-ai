@@ -66,3 +66,56 @@ def test_entry_gate_close_disables():
     g = EntryGate(enabled=True)
     g.close()
     assert g.entries_enabled is False
+
+
+def test_reconcile_open_orders_noop_when_book_unknown(tmp_path):
+    """A failed open-orders query must NOT mark DB stops cancelled — the old
+    []-on-failure behavior silently declared every working stop dead."""
+    from autotrader.lifecycle import reconcile_open_orders
+    db = DB(str(tmp_path / "t.db"))
+    db.record_trade(client_order_id="c1", symbol="US.AAPL", side="SELL", qty=5,
+                    order_type="TRAILING_STOP", limit_price=None,
+                    broker_order_id="sim-9", state="SUBMITTED")
+    b = SimBroker(quotes={"US.AAPL": 100.0})
+    b.fail_open_orders = True
+    assert reconcile_open_orders(b, db) == 0
+    assert db.get_open_trailing_stop("US.AAPL") == "sim-9"   # still live in the projection
+    db.close()
+
+
+def test_ground_truth_sync_skips_fills_when_query_fails(tmp_path):
+    from autotrader.lifecycle import ground_truth_sync
+    db = DB(str(tmp_path / "t.db"))
+    b = SimBroker(quotes={"US.AAPL": 100.0}, cash=10000.0)
+    b.place_order(OrderRequest(symbol="US.AAPL", side="BUY", qty=1,
+                               order_type="MARKET", limit_price=None,
+                               client_order_id="seed"))
+    b.fail_reconcile_fills = True
+    res = ground_truth_sync(b, db)
+    assert res.new_fills == 0
+    assert db._conn.execute("SELECT COUNT(*) FROM fills").fetchone()[0] == 0
+    db.close()
+
+
+def test_ground_truth_sync_keeps_positions_when_positions_not_loaded(tmp_path):
+    """A stale/not-loaded snapshot (positions query failed) must not wipe the
+    positions projection with its empty tuple."""
+    from autotrader.lifecycle import ground_truth_sync
+    from autotrader.domain import AccountSnapshot
+    db = DB(str(tmp_path / "t.db"))
+    good = SimBroker(quotes={"US.AAPL": 100.0}, cash=10000.0)
+    good.place_order(OrderRequest(symbol="US.AAPL", side="BUY", qty=3,
+                                  order_type="MARKET", limit_price=None,
+                                  client_order_id="seed"))
+    ground_truth_sync(good, db)                    # projection now holds AAPL x3
+
+    class _BrokenPositions(SimBroker):
+        def get_account(self):
+            return AccountSnapshot(cash=1.0, total_assets=1.0, day_pnl=0.0,
+                                   stale=True, positions_loaded=False, positions=())
+
+    broken = _BrokenPositions(quotes={"US.AAPL": 100.0})
+    ground_truth_sync(broken, db)
+    row = db._conn.execute("SELECT qty FROM positions WHERE symbol='US.AAPL'").fetchone()
+    assert row is not None and row[0] == 3         # NOT wiped
+    db.close()
