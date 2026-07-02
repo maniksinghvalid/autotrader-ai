@@ -142,6 +142,43 @@ def test_unknown_book_aborts_escalation_no_market_no_cancel(tmp_path):
     assert len(b._open) == 1                              # original limit still resting
 
 
+def test_escalation_dwells_between_stages(tmp_path):
+    """Each stage gets escalation_dwell_seconds to fill before being judged
+    resting (review Important #3: zero dwell degenerates the feature into
+    'MARKET with extra API calls' on live)."""
+    slept = []
+    b = SimBroker(quotes={"US.AAPL": 100.0}, cash=1_000_000.0, spread_bps=100.0)
+    strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=100.0,
+                                             stop_loss_pct=0.05, take_profit_pct=0.10,
+                                             confidence=0.7))
+    eng = TradeEngine(broker=b, strategy=strat,
+                      cfg=_cfg(order_cap_bps=5.0, escalation_dwell_seconds=7.5),
+                      order_qty=10, audit_path=str(tmp_path / "audit.jsonl"),
+                      escalation_sleep=slept.append)
+    assert eng.tick().action == "ORDER_PLACED"
+    assert slept == [7.5, 7.5]          # stage-1 dwell + re-peg dwell before MARKET
+
+
+def test_failed_cancel_never_double_submits(tmp_path):
+    """cancel_order raising (commonly 'already filled') must ABORT escalation —
+    submitting the next stage after a failed cancel risks a duplicate fill."""
+    from autotrader.domain import BrokerError, BrokerErrorKind
+
+    class _StickyCancel(SimBroker):
+        def cancel_order(self, boid):
+            raise BrokerError(BrokerErrorKind.UNKNOWN, "cancel rejected: already filled")
+
+    b = _StickyCancel(quotes={"US.AAPL": 100.0}, cash=1_000_000.0, spread_bps=100.0)
+    strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=100.0,
+                                             stop_loss_pct=0.05, take_profit_pct=0.10,
+                                             confidence=0.7))
+    eng = TradeEngine(broker=b, strategy=strat, cfg=_cfg(order_cap_bps=5.0),
+                      order_qty=10, audit_path=str(tmp_path / "audit.jsonl"))
+    assert eng.tick().action == "ORDER_PLACED"
+    assert b.get_account().position_qty("US.AAPL") == 0   # no re-peg, no MARKET
+    assert len(b._open) == 1                              # only the original resting limit
+
+
 def test_hedge_confirm_never_confirms_on_unknown_book(tmp_path):
     """A failed open-orders query during the hedge fill-poll must count as NOT
     confirmed (spec W2) — the old code's `[]`-on-failure made a rate-limited

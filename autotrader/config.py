@@ -69,6 +69,11 @@ class RiskConfig:
     limit_orders_enabled: bool = False
     order_cap_bps: float = 0.0
     order_cap_ticks: float = 0.0
+    # Dwell time given to each escalation stage (initial capped LIMIT, then the
+    # re-peg) before it is judged "resting" and escalation advances. Zero dwell
+    # would degenerate the feature into "MARKET with extra API calls" on live —
+    # see _submit_with_escalation in main.py.
+    escalation_dwell_seconds: float = 20.0
     # Trading calendar (spec W3): full-day market holidays, added to the
     # weekend gate in market_calendar.is_trading_day. Not a risk limit — but
     # still config-only per CLAUDE.md (no hardcoded dates outside config).
@@ -144,5 +149,6 @@ def load_risk_config() -> RiskConfig:
         limit_orders_enabled=_b("RISK_LIMIT_ORDERS_ENABLED", False),
         order_cap_bps=_f("RISK_ORDER_CAP_BPS", 0.0),
         order_cap_ticks=_f("RISK_ORDER_CAP_TICKS", 0.0),
+        escalation_dwell_seconds=_f("RISK_ESCALATION_DWELL_SECONDS", 20.0),
         market_holidays=holidays,
     )

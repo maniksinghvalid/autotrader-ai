@@ -69,6 +69,7 @@ class TradeEngine:
                  entry_gate: "Optional[EntryGate]" = None, today_fn=None,
                  hedge_confirm_attempts: int = _HEDGE_CONFIRM_ATTEMPTS,
                  hedge_confirm_sleep=None,
+                 escalation_sleep=None,
                  alert_url: "Optional[str]" = None, alert_post=None,
                  session_id: "Optional[str]" = None, snapshot_cache_ticks: int = 1):
         self._b = broker
@@ -101,6 +102,9 @@ class TradeEngine:
         # order-FILL poll, not an OpenD readiness check (CLAUDE.md), and reuses the
         # injected-sleep + backoff_seconds pattern already used by watchdog.py.
         self._hedge_confirm_sleep = hedge_confirm_sleep or (lambda _s: None)
+        # Injected dwell between escalation stages — same pattern as
+        # hedge_confirm_sleep: no-op in tests, time.sleep in production wiring.
+        self._escalation_sleep = escalation_sleep or (lambda _s: None)
         self._alert_url = alert_url
         self._alert_post = alert_post
         # External BUY signals that arrived while the entry window was closed
@@ -328,36 +332,49 @@ class TradeEngine:
             return None
         return ack.client_order_id in {o.client_order_id for o in open_orders}
 
-    def _submit_with_escalation(self, req: OrderRequest, snap, ref_price: float):
-        """Submit a capped LIMIT; if it rests unfilled, cancel + re-peg once to the
-        current touch; if still unfilled, submit MARKET so a risk exit completes.
-        Each stage re-runs the risk core (it stays the sole gate) and uses a distinct
-        client_order_id so the router does not dedupe. Only used when the flag is on
-        and the order is a LIMIT; MARKET/TRAILING_STOP requests submit once as before.
+    def _cancel_for_escalation(self, ack) -> bool:
+        """Cancel ack's resting order; True only when the cancel SUCCEEDED and
+        the next escalation stage may submit. A cancel failure usually means
+        'already filled' — submitting the next stage then would DOUBLE-FILL
+        (review Important #3), so the caller must stop escalating instead. The
+        abandoned resting/filled order is cleaned up by the EOD cancel-all and
+        the morning stop reconcile."""
+        if not ack.broker_order_id:
+            return False
+        try:
+            self._b.cancel_order(ack.broker_order_id)
+            return True
+        except BrokerError as e:
+            logger.warning("escalation: cancel %s failed (%s) — NOT advancing",
+                           ack.broker_order_id, e)
+            return False
 
-        Returns (ack, terminal_req): terminal_req is the OrderRequest whose submission
-        produced the returned ack (req, the re-pegged `peg`, or the fallback `mkt`),
-        so callers can record the DB row's order_type/limit_price from the request
-        that actually produced the ack rather than the original req."""
+    def _submit_with_escalation(self, req: OrderRequest, snap, ref_price: float):
+        """Submit a capped LIMIT; give it escalation_dwell_seconds to fill; if
+        still resting, cancel + re-peg once to the current touch; dwell again;
+        if still resting, submit MARKET so a risk exit completes. Each stage
+        re-runs the risk core and uses a distinct client_order_id. An UNKNOWN
+        open-orders book or a FAILED cancel aborts escalation with the current
+        ack — a duplicate fill is worse than a resting limit.
+
+        Returns (ack, terminal_req): terminal_req produced the returned ack."""
         if req.order_type != "LIMIT":
             return self._router.submit(req), req
         ack = self._router.submit(req)
         ack_req = req
 
+        self._escalation_sleep(self._cfg.escalation_dwell_seconds)
         working = self._order_working(ack)
         if working is None:
-            logger.warning("escalation: open-orders unknown — leaving %s as-is "
-                           "(no cancel, no fallback)", ack.client_order_id)
+            logger.warning("escalation: open-orders unknown — leaving %s as-is",
+                           ack.client_order_id)
             return ack, req
         if not working:
-            return ack, req   # marketable limit filled (or terminal) on the first pass
+            return ack, req   # filled (or terminal) within the dwell
+        if not self._cancel_for_escalation(ack):
+            return ack, req
 
-        # Stage 2: cancel the resting limit, re-peg to the CURRENT touch.
-        if ack.broker_order_id:
-            try:
-                self._b.cancel_order(ack.broker_order_id)
-            except BrokerError as e:
-                logger.warning("escalation: cancel %s failed: %s", ack.broker_order_id, e)
+        # Stage 2: re-peg to the CURRENT touch (original order confirmed cancelled).
         from autotrader.limit_pricing import capped_limit_price
         cur = self._b.get_quote(req.symbol) or ref_price
         peg_cid = req.client_order_id + "-peg"
@@ -370,6 +387,7 @@ class TradeEngine:
         if evaluate(peg, snap, self._cfg, ref_price=cur).approved:
             ack = self._router.submit(peg)
             ack_req = peg
+            self._escalation_sleep(self._cfg.escalation_dwell_seconds)
             working = self._order_working(ack)
             if working is None:
                 logger.warning("escalation: open-orders unknown after re-peg — "
@@ -377,13 +395,10 @@ class TradeEngine:
                 return ack, peg
             if not working:
                 return ack, peg
+            if not self._cancel_for_escalation(ack):
+                return ack, ack_req
 
-        # Stage 3: MARKET fallback so the order (esp. a risk exit) completes.
-        if ack.broker_order_id:
-            try:
-                self._b.cancel_order(ack.broker_order_id)
-            except BrokerError as e:
-                logger.warning("escalation: cancel %s failed: %s", ack.broker_order_id, e)
+        # Stage 3: MARKET fallback — reached only with no order left resting.
         mkt_cid = req.client_order_id + "-mkt"
         mkt = OrderRequest(symbol=req.symbol, side=req.side, qty=req.qty,
                            order_type="MARKET", limit_price=None,
@@ -392,7 +407,8 @@ class TradeEngine:
                            correlation_id=req.correlation_id)
         decision = evaluate(mkt, snap, self._cfg, ref_price=cur)
         if not decision.approved:
-            logger.warning("escalation: MARKET fallback rejected by risk: %s", decision.reason)
+            logger.warning("escalation: MARKET fallback rejected by risk: %s",
+                           decision.reason)
             return ack, ack_req
         return self._router.submit(mkt), mkt
 

@@ -71,6 +71,14 @@ def test_loader_reads_limit_order_knobs_with_safe_defaults(monkeypatch):
     assert cfg2.order_cap_ticks == 2.0
 
 
+def test_escalation_dwell_from_env(monkeypatch):
+    from autotrader.config import load_risk_config
+    monkeypatch.delenv("RISK_ESCALATION_DWELL_SECONDS", raising=False)
+    assert load_risk_config().escalation_dwell_seconds == 20.0
+    monkeypatch.setenv("RISK_ESCALATION_DWELL_SECONDS", "5")
+    assert load_risk_config().escalation_dwell_seconds == 5.0
+
+
 def test_market_holidays_default_and_override(monkeypatch):
     from datetime import date
     from autotrader.config import load_risk_config
