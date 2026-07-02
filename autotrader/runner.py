@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date as _date
-from typing import Callable
+from typing import Callable, Optional
 
 from autotrader.clock import Clock
 from autotrader.lifecycle import EntryGate, ground_truth_sync
@@ -32,7 +32,8 @@ class SessionRunner:
     def __init__(self, engine, broker, db, gate: EntryGate,
                  scheduler: LifecycleScheduler, watchdog, clock: Clock,
                  sleep: Callable[[float], None], loop_interval: float = 5.0,
-                 signal_inbox=None, reporter=None, stop_manager=None):
+                 signal_inbox=None, reporter=None, stop_manager=None,
+                 trading_day_fn: Optional[Callable[[_date], bool]] = None):
         self._engine = engine
         self._broker = broker
         self._db = db
@@ -45,6 +46,7 @@ class SessionRunner:
         self._inbox = signal_inbox
         self._reporter = reporter
         self._stop_manager = stop_manager
+        self._trading_day_fn = trading_day_fn
 
     def _fetch_account_for_perf(self, max_attempts: int = 4):
         """Fetch the account snapshot for the performance row, retrying with
@@ -134,7 +136,11 @@ class SessionRunner:
         """Execute one loop iteration. Returns the engine tick action, or
         'HALTED' if the gate is halted, or 'HALTED_UNHEALTHY' if the watchdog
         could not restore the connection. External inbox signals are routed only
-        when healthy."""
+        when healthy. On a non-trading day (weekend/holiday, when a
+        trading_day_fn is wired) NOTHING runs — no lifecycle jobs, no tick, no
+        inbox — and 'NON_TRADING_DAY' is returned."""
+        if self._trading_day_fn is not None and not self._trading_day_fn(now.date()):
+            return "NON_TRADING_DAY"
         for job in self._sched.poll(now):
             self._run_job(job, now)
         if self._gate is not None and self._gate.halted:

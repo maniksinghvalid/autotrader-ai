@@ -6,7 +6,14 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import date
 from typing import FrozenSet
+
+# NYSE full-day holidays for 2026 — the shipped default for RISK_MARKET_HOLIDAYS.
+# Operators must extend this via config each year (tracked in PRE-LIVE.md).
+_DEFAULT_2026_NYSE_HOLIDAYS = ("2026-01-01,2026-01-19,2026-02-16,2026-04-03,"
+                               "2026-05-25,2026-06-19,2026-07-03,2026-09-07,"
+                               "2026-11-26,2026-12-25")
 
 
 @dataclass(frozen=True)
@@ -62,6 +69,10 @@ class RiskConfig:
     limit_orders_enabled: bool = False
     order_cap_bps: float = 0.0
     order_cap_ticks: float = 0.0
+    # Trading calendar (spec W3): full-day market holidays, added to the
+    # weekend gate in market_calendar.is_trading_day. Not a risk limit — but
+    # still config-only per CLAUDE.md (no hardcoded dates outside config).
+    market_holidays: FrozenSet[date] = frozenset()
 
 
 def _f(name: str, default: float) -> float:
@@ -96,6 +107,12 @@ def load_risk_config() -> RiskConfig:
         raise ValueError(
             f"RISK_DAILY_LOSS_HALT ({daily_loss_halt}) must exceed "
             f"RISK_DAILY_LOSS_LIMIT ({daily_loss_limit})")
+    raw_holidays = os.getenv("RISK_MARKET_HOLIDAYS", _DEFAULT_2026_NYSE_HOLIDAYS)
+    try:
+        holidays = frozenset(date.fromisoformat(s.strip())
+                             for s in raw_holidays.split(",") if s.strip())
+    except ValueError as e:
+        raise ValueError(f"RISK_MARKET_HOLIDAYS contains an invalid ISO date: {e}")
     return RiskConfig(
         trading_env=env,
         min_confidence=_f("RISK_MIN_CONFIDENCE", 0.6),
@@ -127,4 +144,5 @@ def load_risk_config() -> RiskConfig:
         limit_orders_enabled=_b("RISK_LIMIT_ORDERS_ENABLED", False),
         order_cap_bps=_f("RISK_ORDER_CAP_BPS", 0.0),
         order_cap_ticks=_f("RISK_ORDER_CAP_TICKS", 0.0),
+        market_holidays=holidays,
     )

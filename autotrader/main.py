@@ -848,6 +848,7 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
         stop_alert = lambda text: _post_slack(slack_url, {"text": text})
     stop_manager = StopManager(engine, broker, db, cfg, alert_fn=stop_alert)
 
+    from autotrader.market_calendar import is_trading_day
     runner = SessionRunner(
         engine=engine, broker=broker, db=db, gate=gate,
         scheduler=LifecycleScheduler(), watchdog=watchdog, clock=Clock(),
@@ -856,6 +857,7 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
         signal_inbox=inbox,
         reporter=reporter,
         stop_manager=stop_manager,
+        trading_day_fn=lambda d: is_trading_day(d, cfg.market_holidays),
     )
 
     stopped = {"flag": False}

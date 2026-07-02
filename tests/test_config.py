@@ -69,3 +69,22 @@ def test_loader_reads_limit_order_knobs_with_safe_defaults(monkeypatch):
     assert cfg2.limit_orders_enabled is True
     assert cfg2.order_cap_bps == 5.0
     assert cfg2.order_cap_ticks == 2.0
+
+
+def test_market_holidays_default_and_override(monkeypatch):
+    from datetime import date
+    from autotrader.config import load_risk_config
+    monkeypatch.delenv("RISK_MARKET_HOLIDAYS", raising=False)
+    cfg = load_risk_config()
+    assert date(2026, 12, 25) in cfg.market_holidays          # shipped default
+    monkeypatch.setenv("RISK_MARKET_HOLIDAYS", "2027-01-01, 2027-07-05")
+    cfg = load_risk_config()
+    assert cfg.market_holidays == frozenset({date(2027, 1, 1), date(2027, 7, 5)})
+
+
+def test_market_holidays_bad_date_raises(monkeypatch):
+    import pytest
+    from autotrader.config import load_risk_config
+    monkeypatch.setenv("RISK_MARKET_HOLIDAYS", "2026-13-45")
+    with pytest.raises(ValueError):
+        load_risk_config()
