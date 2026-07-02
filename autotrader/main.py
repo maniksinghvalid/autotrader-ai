@@ -405,7 +405,16 @@ class TradeEngine:
                            client_order_id=mkt_cid, option=req.option,
                            position_effect=req.position_effect,
                            correlation_id=req.correlation_id)
-        decision = evaluate(mkt, snap, self._cfg, ref_price=cur)
+        # Price the MARKET stage's risk check at the side it will actually
+        # execute (BUY lifts the ask, SELL hits the bid) rather than the last
+        # quote — this makes the veto branch reachable and honest (spec W5).
+        touch = self._b.get_touch(req.symbol)
+        if touch is not None:
+            bid, ask = touch
+            exec_ref = ask if req.side == "BUY" else bid
+        else:
+            exec_ref = cur
+        decision = evaluate(mkt, snap, self._cfg, ref_price=exec_ref)
         if not decision.approved:
             logger.warning("escalation: MARKET fallback rejected by risk: %s",
                            decision.reason)

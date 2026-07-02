@@ -193,3 +193,20 @@ def test_hedge_confirm_never_confirms_on_unknown_book(tmp_path):
                        order_type="MARKET", limit_price=None,
                        client_order_id="hedge-cid")
     assert eng._confirm_hedge_fill(ack, req) is False   # unknown != confirmed
+
+
+def test_market_stage_vetoed_on_touch_priced_notional(tmp_path):
+    """T6b via configuration: with a 50bps spread the MARKET stage's ask-priced
+    notional (10 x 100.5 = 1005) breaches a 1002 cap that the capped-limit
+    stages (10 x 100.05 = 1000.5) do not. Before this task, Stage 3 priced
+    the risk check at the last quote (10 x 100.0 = 1000 <= 1002) so the veto
+    was unreachable via config alone; touch-pricing makes it reachable. The
+    re-pegged limit was already cancelled by Task 11's cancel-race guard
+    (stage 3 is reached only with nothing left resting), so the veto leaves
+    the book flat rather than a resting order — no position opens and no
+    order is left working."""
+    b = SimBroker(quotes={"US.AAPL": 100.0}, cash=1_000_000.0, spread_bps=50.0)
+    eng = _engine(b, _cfg(order_cap_bps=5.0, max_order_notional=1002.0), tmp_path)
+    assert eng.tick().action == "ORDER_PLACED"
+    assert b.get_account().position_qty("US.AAPL") == 0   # MARKET was vetoed
+    assert len(b._open) == 0                              # peg already cancelled pre-stage-3

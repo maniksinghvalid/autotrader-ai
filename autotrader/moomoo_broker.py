@@ -105,6 +105,19 @@ class MoomooBroker(Broker):
             return None
         return self._c.safe_float(self._c.safe_get(data.iloc[0], "last_price", default=0)) or None
 
+    def get_touch(self, symbol: str):
+        """(bid, ask) from a market snapshot, or None (quote failure / no book).
+        Quote-context call — does not consume trade refresh tokens."""
+        ret, data = self._quote.get_market_snapshot([symbol])
+        if not self._ok(ret) or self._c.is_empty(data):
+            return None
+        row = data.iloc[0]
+        bid = self._c.safe_float(self._c.safe_get(row, "bid_price", "bid", default=0))
+        ask = self._c.safe_float(self._c.safe_get(row, "ask_price", "ask", default=0))
+        if bid <= 0 or ask <= 0:
+            return None
+        return (bid, ask)
+
     def get_option_chain(self, underlying: str, right,
                          dte_min: int = 0, dte_max: int = 100000):  # pragma: no cover — live OpenD
         """Live option chain for `underlying` (e.g. US.AAPL) and `right`

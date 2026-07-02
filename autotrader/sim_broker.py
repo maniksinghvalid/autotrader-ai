@@ -44,6 +44,11 @@ class SimBroker(Broker):
     def get_quote(self, symbol: str) -> Optional[float]:
         return self._quotes.get(symbol)
 
+    def get_touch(self, symbol: str):
+        if symbol not in self._quotes:
+            return None
+        return self._touch(symbol)
+
     def _touch(self, symbol: str):
         """Simulated (bid, ask) around the stored reference. Half-spread each side."""
         ref = self._quotes.get(symbol, 0.0)

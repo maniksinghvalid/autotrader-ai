@@ -298,3 +298,23 @@ class _FailingDealTrade:
 def test_reconcile_fills_returns_none_when_live_deal_query_fails():
     b = _broker_with_trade(_FailingDealTrade(), env="REAL")
     assert b.reconcile_fills(since=None) is None
+
+
+def test_get_touch_reads_bid_ask_from_snapshot():
+    class _QuoteCtx:
+        def get_market_snapshot(self, codes):
+            return 0, _DF([_Row({"code": codes[0], "bid_price": 99.5, "ask_price": 100.5})])
+
+    b = _broker_with_trade(_EmptyOrderListTrade())
+    b._quote = _QuoteCtx()
+    assert b.get_touch("US.AAPL") == (99.5, 100.5)
+
+
+def test_get_touch_none_when_unavailable():
+    class _FailQuoteCtx:
+        def get_market_snapshot(self, codes):
+            return -1, "err"
+
+    b = _broker_with_trade(_EmptyOrderListTrade())
+    b._quote = _FailQuoteCtx()
+    assert b.get_touch("US.AAPL") is None

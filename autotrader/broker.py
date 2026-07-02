@@ -20,6 +20,11 @@ class Broker:
 
     def get_quote(self, symbol: str) -> Optional[float]: raise NotImplementedError
 
+    def get_touch(self, symbol: str):
+        """(bid, ask) for symbol, or None when unavailable. Base returns None
+        so brokers without touch data degrade to last-quote pricing."""
+        return None
+
     def get_option_chain(self, underlying: str, right: OptionRight,
                          dte_min: int = 0, dte_max: int = 100000) -> List["OptionQuote"]:
         """Return chain rows (strike/expiry/delta/premium) for one right, limited
