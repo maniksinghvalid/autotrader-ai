@@ -70,7 +70,7 @@ class TradeEngine:
                  hedge_confirm_attempts: int = _HEDGE_CONFIRM_ATTEMPTS,
                  hedge_confirm_sleep=None,
                  alert_url: "Optional[str]" = None, alert_post=None,
-                 session_id: "Optional[str]" = None):
+                 session_id: "Optional[str]" = None, snapshot_cache_ticks: int = 1):
         self._b = broker
         self._strat = strategy
         self._cfg = cfg
@@ -84,6 +84,14 @@ class TradeEngine:
         # fresh nonce per engine/process; tests may inject a fixed id.
         import uuid
         self._session_id = session_id or uuid.uuid4().hex[:8]
+        # Refresh-token budgeting: the tick's account snapshot may be reused for
+        # up to snapshot_cache_ticks ticks. get_account costs 2 refresh tokens
+        # (accinfo + positions) against Moomoo's 10-per-30s budget, and a 5s loop
+        # fetching every tick starves hedge-confirm/escalation queries. Cached
+        # data feeds ONLY the strategy evaluate; routing always re-fetches.
+        self._snap_cache_ticks = max(1, int(snapshot_cache_ticks))
+        self._snap_cache = None
+        self._snap_cache_left = 0
         self._db = db
         self._gate = entry_gate
         self._today_fn = today_fn or date.today
@@ -106,7 +114,7 @@ class TradeEngine:
     def tick(self) -> TickResult:
         if self._gate is not None and self._gate.halted:
             return TickResult("HALTED")
-        snap = self._b.get_account()
+        snap = self._account_for_tick()
         symbol = self._strat.p.symbol
         price = self._b.get_quote(symbol)
         if price is None:
@@ -116,12 +124,17 @@ class TradeEngine:
         signal = self._strat.evaluate(price=price, position=pos)
         if signal is None:
             return TickResult("NO_SIGNAL")
+        # Routing decisions never run on cached data: drop the cache and
+        # re-fetch fresh so the risk core sees current positions/exposure.
+        self._snap_cache = None
+        snap = self._b.get_account()
         return self._route_signal(signal, snap, price)
 
     def submit_external_signal(self, signal: Signal) -> TickResult:
         """Route a validated external signal through the SAME pipeline as a
         strategy signal: confidence filter -> entry gate -> risk core -> router.
         External signals NEVER bypass the risk core (research C4)."""
+        self._snap_cache = None   # external routes invalidate the tick cache
         snap = self._b.get_account()
         price = self._b.get_quote(signal.symbol)
         if price is None:
@@ -159,6 +172,13 @@ class TradeEngine:
         if pending:
             logger.info("flushed %d deferred entry(ies) at entry-open", len(pending))
         return results
+
+    def _account_for_tick(self):
+        if self._snap_cache is None or self._snap_cache_left <= 0:
+            self._snap_cache = self._b.get_account()
+            self._snap_cache_left = self._snap_cache_ticks
+        self._snap_cache_left -= 1
+        return self._snap_cache
 
     def _route_signal(self, signal: Signal, snap, price: float) -> TickResult:
         if signal.confidence < self._cfg.min_confidence:
