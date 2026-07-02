@@ -316,6 +316,16 @@ class DB:
                 "ORDER BY id DESC LIMIT 1", (symbol,)).fetchone()
         return row[0] if row else None
 
+    def get_trade_by_broker_order_id(self, broker_order_id: str):
+        """(symbol, side, order_type) of the newest trades row carrying this
+        broker id, or None if the order is not in the projection (not ours)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT symbol, side, order_type FROM trades "
+                "WHERE broker_order_id=? ORDER BY id DESC LIMIT 1",
+                (broker_order_id,)).fetchone()
+        return row
+
     def mark_order_cancelled(self, broker_order_id: str) -> None:
         with self._lock:
             self._conn.execute(

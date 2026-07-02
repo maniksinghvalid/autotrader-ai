@@ -542,13 +542,21 @@ class TradeEngine:
         except Exception as e:   # never raise into the trading loop
             logger.error("UNHEDGED alert POST failed: %s", e)
 
+    def attach_trailing_stop(self, symbol: str, qty: int, ref_price: float,
+                             tag: str) -> bool:
+        """Public audited stop-attach (StopManager's morning re-attach). Same
+        path as entry-time attachment: risk core -> router -> DB. `tag` seeds
+        the client_order_id, so one (tag, symbol, qty) attaches at most once."""
+        return self._attach_trailing_stop(symbol, qty, ref_price, tag)
+
     def _attach_trailing_stop(self, symbol: str, qty: int, ref_price: float,
-                              entry_signal_id: str) -> None:
+                              entry_signal_id: str) -> bool:
         """Place a broker-resting TRAILING_STOP SELL for `qty` shares through the
         SAME audited risk path. Idempotent: the client_order_id is derived from
         the entry's signal id, so re-attaching for the same entry dedupes at the
         router. A rejected stop is logged, never fatal to the entry. Stop
-        consolidation on qty changes (pyramiding) is Phase 3.
+        consolidation on qty changes (pyramiding) is Phase 3. Returns True iff
+        the stop was actually placed (risk-approved and submitted).
 
         LIVE NOTE (fail-safe): against SimBroker the BUY auto-fills, so the
         re-fetched snapshot reflects the new position and the stop attaches. On
@@ -565,7 +573,7 @@ class TradeEngine:
         decision = evaluate(req, snap, self._cfg, ref_price=ref_price)
         if not decision.approved:
             logger.warning("trailing stop NOT attached for %s: %s", symbol, decision.reason)
-            return
+            return False
         ack = self._router.submit(req)
         if self._db:
             self._db.record_trade(
@@ -575,6 +583,7 @@ class TradeEngine:
             )
         logger.info("trailing stop attached: %s SELL %d @ %.1f%% trail",
                     symbol, qty, self._cfg.trailing_stop_pct)
+        return True
 
     def submit_rebalance_order(self, trade, ref_price: float, round_id: str):
         """Route a rebalance trim/top-up through the SAME audited path as any

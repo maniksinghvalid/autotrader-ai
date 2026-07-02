@@ -21,6 +21,15 @@ PositionEffect = Literal["OPEN", "CLOSE"]
 # (US.OXY…'s residual "XY26…" fails to match, so it is not counted for US.O).
 _OPT_SUFFIX_RE = re.compile(r"^\d{6}([CP])\d+$")
 
+_OPT_CODE_TAIL_RE = re.compile(r"\d{6}[CP]\d+$")
+
+
+def is_option_symbol(symbol: str) -> bool:
+    """True for moomoo option codes (e.g. US.AAPL260717C210000): equity codes
+    never end with the 6-digit-date + C/P + strike tail. Used to separate
+    option positions (overlay-managed, O4) from equity longs (stop-managed)."""
+    return _OPT_CODE_TAIL_RE.search(symbol) is not None
+
 
 class OverlayType(enum.Enum):
     """Full option-strategy range. O1 implements COVERED_CALL + PROTECTIVE_PUT;
