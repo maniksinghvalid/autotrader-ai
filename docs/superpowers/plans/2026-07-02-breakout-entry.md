@@ -525,14 +525,17 @@ def test_breakout_tick_no_entry_without_reference(tmp_path):
 
 
 def test_disabled_strategy_tick_is_noop(tmp_path):
+    strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=100.0,
+                                             stop_loss_pct=0.05, take_profit_pct=0.10,
+                                             confidence=0.7))
     b = SimBroker(quotes={"US.AAPL": 101.0}, cash=100000.0)
-    eng = _engine(b, tmp_path=tmp_path)
-    eng._strategy_enabled = False   # constructed disabled below in real wiring
+    eng = TradeEngine(broker=b, strategy=strat, cfg=_cfg(), order_qty=10,
+                      audit_path=str(tmp_path / "audit.jsonl"), strategy_enabled=False)
     assert eng.tick().action == "STRATEGY_DISABLED"
     assert b.get_account().position_qty("US.AAPL") == 0
 ```
 
-> Note: the `_engine` / `_cfg` helpers already exist at the top of `tests/test_main_loop.py` (US.AAPL allowed). The last test sets the private flag directly to prove the gate; Step 3 adds the real ctor arg.
+> Note: the `_cfg` helper and `ThresholdStrategy`/`StrategyParams`/`TradeEngine` imports already exist at the top of `tests/test_main_loop.py` (US.AAPL allowed). Every Task-5 test RED-fails at collection with `TypeError: unexpected keyword argument` (`breakout_ref=`/`strategy_enabled=`) until Step 3 adds the ctor args.
 
 - [ ] **Step 2: Run test to verify it fails**
 
