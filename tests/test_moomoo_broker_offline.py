@@ -248,3 +248,53 @@ def test_get_account_marks_positions_loaded_when_flat(monkeypatch):
     monkeypatch.setattr(b, "_positions", lambda: [])
     snap = b.get_account()
     assert snap.positions_loaded is True
+
+
+class _FailingOrderListTrade:
+    """order_list_query fails (e.g. OpenD timeout) — the book is UNKNOWN."""
+    def __init__(self):
+        self.cancelled = []
+
+    def order_list_query(self, **kwargs):
+        return -1, "query timeout"
+
+    def modify_order(self, **kwargs):
+        self.cancelled.append(kwargs.get("order_id"))
+        return 0, None
+
+
+class _EmptyOrderListTrade:
+    def order_list_query(self, **kwargs):
+        return 0, None  # RET_OK, empty frame -> genuinely no working orders
+
+
+def test_get_open_orders_returns_none_on_query_failure():
+    b = _broker_with_trade(_FailingOrderListTrade())
+    assert b.get_open_orders() is None          # unknown, NOT "no orders"
+
+
+def test_get_open_orders_empty_book_is_empty_list():
+    b = _broker_with_trade(_EmptyOrderListTrade())
+    assert b.get_open_orders() == []
+
+
+def test_cancel_all_is_noop_when_book_unknown():
+    trade = _FailingOrderListTrade()
+    b = _broker_with_trade(trade)
+    b.cancel_all()                               # must not raise
+    assert trade.cancelled == []                 # and must not guess-cancel
+
+
+def test_reconcile_fills_returns_none_when_paper_order_query_fails():
+    b = _broker_with_trade(_FailingOrderListTrade())  # SIMULATE -> _fills_from_orders
+    assert b.reconcile_fills(since=None) is None
+
+
+class _FailingDealTrade:
+    def deal_list_query(self, **kwargs):
+        return -1, "query timeout"
+
+
+def test_reconcile_fills_returns_none_when_live_deal_query_fails():
+    b = _broker_with_trade(_FailingDealTrade(), env="REAL")
+    assert b.reconcile_fills(since=None) is None

@@ -31,6 +31,9 @@ class SimBroker(Broker):
         # keyed by (underlying.upper(), right.upper()) -> List[OptionQuote]
         self._chains = {(u.upper(), r.upper()): list(v)
                         for (u, r), v in (option_chains or {}).items()}
+        # Failure injection for tests of the None-vs-empty broker contract.
+        self.fail_open_orders = False
+        self.fail_reconcile_fills = False
 
     def connect(self) -> None:
         return None
@@ -109,10 +112,14 @@ class SimBroker(Broker):
                                day_pnl=0.0, stale=False, positions_loaded=True,
                                unrealized_pnl=0.0, positions=positions)
 
-    def get_open_orders(self) -> List[OrderAck]:
+    def get_open_orders(self) -> Optional[List[OrderAck]]:
+        if self.fail_open_orders:
+            return None   # simulate a failed/rate-limited query (unknown book)
         return list(self._open.values())
 
-    def reconcile_fills(self, since: Optional[str]) -> List[Fill]:
+    def reconcile_fills(self, since: Optional[str]) -> Optional[List[Fill]]:
+        if self.fail_reconcile_fills:
+            return None
         return list(self._fills)
 
     def close(self) -> None:

@@ -31,6 +31,10 @@ class Broker:
     def cancel_order(self, broker_order_id: str) -> None: raise NotImplementedError
     def cancel_all(self) -> None: raise NotImplementedError
     def get_account(self) -> AccountSnapshot: raise NotImplementedError
-    def get_open_orders(self) -> List[OrderAck]: raise NotImplementedError
-    def reconcile_fills(self, since: Optional[str]) -> List[Fill]: raise NotImplementedError
+    def get_open_orders(self) -> Optional[List[OrderAck]]:
+        """Working orders; None = the query FAILED (unknown book), [] = none."""
+        raise NotImplementedError
+    def reconcile_fills(self, since: Optional[str]) -> Optional[List[Fill]]:
+        """Fills since `since`; None = the query FAILED, [] = none."""
+        raise NotImplementedError
     def close(self) -> None: raise NotImplementedError

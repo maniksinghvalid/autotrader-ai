@@ -232,6 +232,11 @@ class MoomooBroker(Broker):
 
     def cancel_all(self) -> None:
         orders = self.get_open_orders()
+        if orders is None:
+            # Book unknown — cancelling by a stale/guessed list is worse than
+            # doing nothing; the next lifecycle reconcile retries.
+            logger.error("cancel_all: open-orders query failed — book unknown, nothing cancelled")
+            return
         logger.info("cancel_all: %d open order(s) to cancel", len(orders))
         for ack in orders:
             if ack.broker_order_id:
@@ -240,12 +245,21 @@ class MoomooBroker(Broker):
                 except BrokerError:
                     pass  # best-effort flatten on shutdown; logged by cancel_order
 
-    def get_open_orders(self) -> List[OrderAck]:
+    def get_open_orders(self) -> Optional[List[OrderAck]]:
+        """Working orders, or None when the QUERY FAILED (rate-limit timeout or
+        non-OK ret). None is distinct from [] (genuinely no working orders) —
+        the same contract as _positions(). Callers must treat None as UNKNOWN,
+        never as 'nothing is working' (a rate-limited query must not make a
+        hedge look filled or a resting limit look done)."""
         if not self._refresh_rl.acquire(timeout=60.0):
-            return []  # best-effort on shutdown/monitoring path
+            logger.warning("get_open_orders: refresh rate limit — book unknown")
+            return None
         ret, data = self._trade.order_list_query(
             trd_env=self._env(), acc_id=self._acc_id, refresh_cache=True)
-        if not self._ok(ret) or self._c.is_empty(data):
+        if not self._ok(ret):
+            logger.warning("get_open_orders: query failed: %s", data)
+            return None
+        if self._c.is_empty(data):
             return []
         out: List[OrderAck] = []
         for i in range(len(data)):
@@ -308,8 +322,9 @@ class MoomooBroker(Broker):
             ))
         return out
 
-    def get_open_orders_count(self) -> int:  # convenience for logs
-        return len(self.get_open_orders())
+    def get_open_orders_count(self) -> int:  # convenience for logs; -1 = unknown
+        orders = self.get_open_orders()
+        return len(orders) if orders is not None else -1
 
     def _is_paper(self) -> bool:
         """SIMULATE accounts have no deal/fill feed — deal_list_query returns
@@ -317,20 +332,25 @@ class MoomooBroker(Broker):
         yielding either a TrdEnv enum (live) or a plain str (tests)."""
         return self._c.format_enum(self._env()).upper() == "SIMULATE"
 
-    def reconcile_fills(self, since: Optional[str]) -> List[Fill]:
+    def reconcile_fills(self, since: Optional[str]) -> Optional[List[Fill]]:
         # Paper/SIMULATE: the deal feed is unavailable, so reconstruct fills from
         # the order list (which IS supported on paper). Without this, the fills
         # projection stays permanently empty on paper and the EOD report shows no
         # activity despite real executions. Live accounts use the real deal feed.
+        # Returns None when the underlying query FAILED — distinct from [] (no fills).
+        # Callers must skip projection updates on None.
         if self._is_paper():
             return self._fills_from_orders()
         if not self._refresh_rl.acquire(timeout=60.0):
-            return []
+            return None
         kwargs = dict(trd_env=self._env(), acc_id=self._acc_id, refresh_cache=True)
         if since:
             kwargs["begin_time"] = since
         ret, data = self._trade.deal_list_query(**kwargs)
-        if not self._ok(ret) or self._c.is_empty(data):
+        if not self._ok(ret):
+            logger.warning("reconcile_fills: deal query failed: %s", data)
+            return None
+        if self._c.is_empty(data):
             return []
         out: List[Fill] = []
         for i in range(len(data)):
@@ -346,20 +366,25 @@ class MoomooBroker(Broker):
             ))
         return out
 
-    def _fills_from_orders(self) -> List[Fill]:
+    def _fills_from_orders(self) -> Optional[List[Fill]]:
         """Synthesize fills from the order list for paper accounts: one Fill per
         order with executed quantity (dealt_qty > 0), keyed by order_id so it is
         idempotent across a day's reconciles (db.record_fills dedupes by fill_id).
+
+        Returns None when the order query FAILED — distinct from [] (no fills).
 
         Caveat: a partial fill is captured at its dealt_qty as of this reconcile;
         the stable fill_id means a later top-up is not re-counted. Paper market
         orders fill atomically, and reconciles run after the entry window closes
         (orders terminal), so in practice this matches the real executed quantity."""
         if not self._refresh_rl.acquire(timeout=60.0):
-            return []
+            return None
         ret, data = self._trade.order_list_query(
             trd_env=self._env(), acc_id=self._acc_id, refresh_cache=True)
-        if not self._ok(ret) or self._c.is_empty(data):
+        if not self._ok(ret):
+            logger.warning("_fills_from_orders: order query failed: %s", data)
+            return None
+        if self._c.is_empty(data):
             return []
         out: List[Fill] = []
         for i in range(len(data)):
