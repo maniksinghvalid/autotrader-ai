@@ -11,7 +11,10 @@ from typing import Dict, List, Tuple
 PRE_OPEN_SYNC = "PRE_OPEN_SYNC"   # 08:30 — broker ground-truth sync
 ENTRY_OPEN = "ENTRY_OPEN"         # 09:45 — entry window opens
 RISK_SWEEP = "RISK_SWEEP"         # 15:30 — entries close, reconcile + record perf
-EOD_FLATTEN = "EOD_FLATTEN"       # 16:15 — cancel-all + commit + halt for the day
+EOD_CANCEL_ORDERS = "EOD_FLATTEN"   # 16:15 — cancel-all working orders + commit perf.
+                                    # Keeps the legacy string value so persisted
+                                    # scheduler state and old logs stay readable.
+EOD_FLATTEN = EOD_CANCEL_ORDERS     # deprecated alias — positions are NOT flattened
 REBALANCE = "REBALANCE"           # 12:30 — drift-band rebalance + stop consolidation
 RISK_CHECK_MID = "RISK_CHECK_MID"   # 13:30 — tiered intraday risk re-check
 RISK_CHECK_LATE = "RISK_CHECK_LATE"  # 15:00 — tiered intraday risk re-check
@@ -25,7 +28,7 @@ _SCHEDULE: Tuple[Tuple[str, time], ...] = (
     (RISK_CHECK_MID, time(13, 30)),
     (RISK_CHECK_LATE, time(15, 0)),
     (RISK_SWEEP, time(15, 30)),
-    (EOD_FLATTEN, time(16, 15)),
+    (EOD_CANCEL_ORDERS, time(16, 15)),
     (EOD_REPORT, time(16, 30)),
 )
 

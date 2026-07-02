@@ -20,7 +20,7 @@ from autotrader.clock import Clock
 from autotrader.lifecycle import EntryGate, ground_truth_sync
 from autotrader.reporting.pnl import realized_from_fills
 from autotrader.scheduler import (
-    LifecycleScheduler, PRE_OPEN_SYNC, ENTRY_OPEN, RISK_SWEEP, EOD_FLATTEN,
+    LifecycleScheduler, PRE_OPEN_SYNC, ENTRY_OPEN, RISK_SWEEP, EOD_CANCEL_ORDERS,
     REBALANCE, RISK_CHECK_MID, RISK_CHECK_LATE, EOD_REPORT,
 )
 from autotrader.watchdog import backoff_seconds
@@ -32,7 +32,7 @@ class SessionRunner:
     def __init__(self, engine, broker, db, gate: EntryGate,
                  scheduler: LifecycleScheduler, watchdog, clock: Clock,
                  sleep: Callable[[float], None], loop_interval: float = 5.0,
-                 signal_inbox=None, reporter=None):
+                 signal_inbox=None, reporter=None, stop_manager=None):
         self._engine = engine
         self._broker = broker
         self._db = db
@@ -44,6 +44,7 @@ class SessionRunner:
         self._loop_interval = loop_interval
         self._inbox = signal_inbox
         self._reporter = reporter
+        self._stop_manager = stop_manager
 
     def _fetch_account_for_perf(self, max_attempts: int = 4):
         """Fetch the account snapshot for the performance row, retrying with
@@ -98,6 +99,11 @@ class SessionRunner:
         elif job == ENTRY_OPEN:
             self._gate.open()
             logger.info("ENTRY_OPEN: entries enabled")
+            # W1: reconcile protective stops FIRST (EOD cancelled them; DAY TIF
+            # would have lapsed them anyway), then replay deferred entries —
+            # whose own stops attach at entry.
+            if self._stop_manager is not None:
+                self._stop_manager.reconcile(now.date())
             # Replay any external BUYs that arrived pre-market (deferred, not dropped)
             # now that the window is open — routed against a fresh snapshot/quote.
             if self._engine is not None:
@@ -112,12 +118,13 @@ class SessionRunner:
                 ground_truth_sync(self._broker, self._db)
                 self._record_perf()
             logger.info("RISK_SWEEP: entries closed, ground truth + performance recorded")
-        elif job == EOD_FLATTEN:
+        elif job == EOD_CANCEL_ORDERS:
             self._gate.close()
             if self._broker is not None:
                 self._broker.cancel_all()
                 self._record_perf()
-            logger.info("EOD_FLATTEN: entries closed, all orders cancelled, performance committed")
+            logger.info("EOD_CANCEL_ORDERS: entries closed, working orders cancelled "
+                        "(stops re-attach at next ENTRY_OPEN), performance committed")
         elif job == EOD_REPORT:
             if self._reporter is not None:
                 self._reporter.send_eod_report(now)

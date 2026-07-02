@@ -148,3 +148,32 @@ def test_no_quote_alerts_operator(tmp_path):
     assert "US.AAPL" in alerts[0]
     assert "no quote" in alerts[0].lower() or "UNPROTECTED" in alerts[0]
     db.close()
+
+
+def test_runner_reconciles_stops_at_entry_open(tmp_path):
+    """Full-loop wiring: a carried position with no stop gets one when the
+    ENTRY_OPEN job fires (before deferred entries flush)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from autotrader.clock import FixedClock
+    from autotrader.lifecycle import EntryGate
+    from autotrader.runner import SessionRunner
+    from autotrader.scheduler import LifecycleScheduler
+    from autotrader.watchdog import Watchdog
+
+    b = SimBroker(quotes={"US.AAPL": 100.0}, cash=100000.0)
+    _seed_long(b)
+    mgr, db, eng = _mgr(tmp_path, b)
+    gate = EntryGate(enabled=False)
+    eng._gate = gate   # reuse the engine built by _mgr
+    runner = SessionRunner(engine=eng, broker=b, db=db, gate=gate,
+                           scheduler=LifecycleScheduler(),
+                           watchdog=Watchdog(health_check=lambda: True,
+                                             reconcile=lambda: None,
+                                             sleep=lambda s: None),
+                           clock=FixedClock(datetime(2026, 7, 6, 9, 46,
+                                                     tzinfo=ZoneInfo("America/New_York"))),
+                           sleep=lambda s: None, stop_manager=mgr)
+    runner.run_once(datetime(2026, 7, 6, 9, 46, tzinfo=ZoneInfo("America/New_York")))
+    assert db.get_open_trailing_stop("US.AAPL") is not None
+    db.close()

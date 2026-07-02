@@ -841,6 +841,13 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
         # silent no-op (runner guards on reporter is not None). Usually means
         # config/secure.config was not sourced into the trader's env (RUNBOOK §4).
         logger.info("EOD Slack reporter disabled (AUTOTRADER_SLACK_WEBHOOK_URL unset)")
+
+    from autotrader.stops import StopManager
+    stop_alert = None
+    if slack_url:
+        stop_alert = lambda text: _post_slack(slack_url, {"text": text})
+    stop_manager = StopManager(engine, broker, db, cfg, alert_fn=stop_alert)
+
     runner = SessionRunner(
         engine=engine, broker=broker, db=db, gate=gate,
         scheduler=LifecycleScheduler(), watchdog=watchdog, clock=Clock(),
@@ -848,6 +855,7 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
         loop_interval=float(os.getenv("AUTOTRADER_LOOP_INTERVAL", "5")),
         signal_inbox=inbox,
         reporter=reporter,
+        stop_manager=stop_manager,
     )
 
     stopped = {"flag": False}
