@@ -833,6 +833,24 @@ class TradeEngine:
             raise
 
 
+def build_engine(broker, strategy, cfg, *, order_qty: int, audit_path: str,
+                 db=None, entry_gate=None, alert_url=None) -> TradeEngine:
+    """Production TradeEngine wiring — the ONE place real time enters the
+    engine: time.sleep for the hedge fill-poll and the escalation dwell (unit
+    tests inject no-ops/recorders through the ctor instead), and the snapshot
+    cache sized from AUTOTRADER_SNAPSHOT_CACHE_TICKS (default 6 ≈ 30s at the
+    5s loop, keeping refresh-token use inside Moomoo's 10-per-30s budget)."""
+    import os as _os
+    import time as _time
+    return TradeEngine(
+        broker, strategy, cfg, order_qty=order_qty, audit_path=audit_path,
+        db=db, entry_gate=entry_gate, alert_url=alert_url,
+        hedge_confirm_sleep=_time.sleep,
+        escalation_sleep=_time.sleep,
+        snapshot_cache_ticks=int(_os.getenv("AUTOTRADER_SNAPSHOT_CACHE_TICKS", "6")),
+    )
+
+
 def main() -> int:  # pragma: no cover — live entrypoint, covered by manual run
     import os
     import sys
@@ -881,9 +899,10 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
 
     gate = EntryGate(enabled=False)  # entries open at 09:45 via the scheduler
     slack_url = os.getenv("AUTOTRADER_SLACK_WEBHOOK_URL")
-    engine = TradeEngine(broker, strat, cfg, order_qty=int(os.getenv("ORDER_QTY", "1")),
-                         audit_path=audit, db=db, entry_gate=gate,
-                         alert_url=slack_url)
+    engine = build_engine(broker, strat, cfg,
+                          order_qty=int(os.getenv("ORDER_QTY", "1")),
+                          audit_path=audit, db=db, entry_gate=gate,
+                          alert_url=slack_url)
     watchdog = Watchdog(
         health_check=broker.heartbeat,
         reconcile=lambda: ground_truth_sync(broker, db),
