@@ -349,3 +349,16 @@ def test_disabled_strategy_tick_is_noop(tmp_path):
                       audit_path=str(tmp_path / "audit.jsonl"), strategy_enabled=False)
     assert eng.tick().action == "STRATEGY_DISABLED"
     assert b.get_account().position_qty("US.AAPL") == 0
+
+
+def test_build_engine_forwards_strategy_flags(tmp_path):
+    from autotrader.main import build_engine
+    b = SimBroker(quotes={"US.AAPL": 101.0}, cash=100000.0)
+    strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=100.0,
+                                             stop_loss_pct=0.05, take_profit_pct=0.10,
+                                             confidence=0.7))
+    eng = build_engine(b, strat, _cfg(), order_qty=1,
+                       audit_path=str(tmp_path / "a.jsonl"),
+                       strategy_enabled=False, breakout_ref="SENTINEL")
+    assert eng._strategy_enabled is False
+    assert eng._breakout_ref == "SENTINEL"

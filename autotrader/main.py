@@ -840,7 +840,8 @@ class TradeEngine:
 
 
 def build_engine(broker, strategy, cfg, *, order_qty: int, audit_path: str,
-                 db=None, entry_gate=None, alert_url=None) -> TradeEngine:
+                 db=None, entry_gate=None, alert_url=None,
+                 strategy_enabled: bool = True, breakout_ref=None) -> TradeEngine:
     """Production TradeEngine wiring — the ONE place real time enters the
     engine: time.sleep for the hedge fill-poll and the escalation dwell (unit
     tests inject no-ops/recorders through the ctor instead), and the snapshot
@@ -851,6 +852,8 @@ def build_engine(broker, strategy, cfg, *, order_qty: int, audit_path: str,
     return TradeEngine(
         broker, strategy, cfg, order_qty=order_qty, audit_path=audit_path,
         db=db, entry_gate=entry_gate, alert_url=alert_url,
+        strategy_enabled=strategy_enabled,
+        breakout_ref=breakout_ref,
         hedge_confirm_sleep=_time.sleep,
         escalation_sleep=_time.sleep,
         snapshot_cache_ticks=int(_os.getenv("AUTOTRADER_SNAPSHOT_CACHE_TICKS", "6")),
@@ -861,8 +864,6 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
     import os
     import sys
     import time
-    from autotrader.strategies.threshold import StrategyParams
-
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = load_risk_config()
     logger.info("TRADING_ENV=%s (paper-only v1)", cfg.trading_env)
@@ -880,19 +881,20 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
         return 1
 
     from autotrader.moomoo_broker import MoomooBroker
+    from autotrader.strategies.breakout import BreakoutParams, BreakoutStrategy
+    from autotrader.breakout_reference import BreakoutReference
     symbol = select_strategy_symbol(cfg.allowed_symbols, os.getenv("STRATEGY_SYMBOL"))
-    entry_price = float(os.getenv("ENTRY_PRICE", "0"))
-    if entry_price <= 0:
-        logger.warning("ENTRY_PRICE=%s: threshold 'price >= entry' is always true — the "
-                       "strategy will buy %s at market when the entry window opens. Set "
-                       "ENTRY_PRICE to a real trigger to avoid buy-at-open.", entry_price, symbol)
-    strat = ThresholdStrategy(StrategyParams(
-        symbol=symbol, entry_price=entry_price,
-        stop_loss_pct=0.05, take_profit_pct=0.10, confidence=0.7))
-    logger.info("internal strategy: symbol=%s entry_price=%s", symbol, entry_price)
+    lookback = int(os.getenv("ENTRY_BREAKOUT_LOOKBACK", "20"))
+    strategy_enabled = os.getenv("STRATEGY_ENABLED", "true").strip().lower() in (
+        "1", "true", "yes", "on")
+    strat = BreakoutStrategy(BreakoutParams(
+        symbol=symbol, stop_loss_pct=0.05, take_profit_pct=0.10, confidence=0.7))
+    logger.info("internal strategy: BREAKOUT symbol=%s lookback=%d enabled=%s",
+                symbol, lookback, strategy_enabled)
     audit = os.path.join(os.path.expanduser("~"), ".futu_trade_audit.jsonl")
     broker = MoomooBroker()
     broker.connect()
+    breakout_ref = BreakoutReference(broker, lookback)
     db_path = os.path.expanduser(os.getenv("AUTOTRADER_DB_PATH", "~/.autotrader.db"))
     from autotrader.db import DB  # lazy import: keeps tests that skip main() SDK-free
     db = DB(db_path)
@@ -908,7 +910,8 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
     engine = build_engine(broker, strat, cfg,
                           order_qty=int(os.getenv("ORDER_QTY", "1")),
                           audit_path=audit, db=db, entry_gate=gate,
-                          alert_url=slack_url)
+                          alert_url=slack_url,
+                          strategy_enabled=strategy_enabled, breakout_ref=breakout_ref)
     watchdog = Watchdog(
         health_check=broker.heartbeat,
         reconcile=lambda: ground_truth_sync(broker, db),
