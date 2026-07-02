@@ -180,3 +180,18 @@ def test_db_creates_parent_directory_if_missing(tmp_path):
     count = db._conn.execute("SELECT COUNT(*) FROM halts").fetchone()[0]
     assert count == 1
     db.close()
+
+
+def test_engine_state_roundtrip(tmp_path):
+    from autotrader.db import DB
+    db = DB(str(tmp_path / "s.db"))
+    assert db.get_state("sched:EOD_REPORT") is None
+    db.set_state("sched:EOD_REPORT", "2026-07-06")
+    db.set_state("deferred:US.AAPL:BUY", "{}")
+    assert db.get_state("sched:EOD_REPORT") == "2026-07-06"
+    db.set_state("sched:EOD_REPORT", "2026-07-07")           # upsert
+    assert db.get_state("sched:EOD_REPORT") == "2026-07-07"
+    assert db.list_state("deferred:") == [("deferred:US.AAPL:BUY", "{}")]
+    db.delete_state("deferred:US.AAPL:BUY")
+    assert db.list_state("deferred:") == []
+    db.close()

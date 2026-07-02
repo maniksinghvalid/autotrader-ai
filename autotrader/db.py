@@ -93,6 +93,12 @@ CREATE TABLE IF NOT EXISTS drivers (
     kind    TEXT NOT NULL,         -- non-signal trade driver, e.g. 'rebalance'
     detail  TEXT NOT NULL          -- human reason, e.g. 'rbal-2026-06-17 · overweight → trim'
 );
+
+CREATE TABLE IF NOT EXISTS engine_state (
+    key        TEXT PRIMARY KEY,   -- namespaced: 'sched:<job>' / 'deferred:<sym>:<dir>'
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 _PERFORMANCE_TABLE = """
@@ -332,6 +338,33 @@ class DB:
                 "UPDATE trades SET state='CANCELLED' WHERE broker_order_id=?",
                 (broker_order_id,))
             self._conn.commit()
+
+    # --- engine_state: durable key/value for crash-safe engine state (W4) ----
+    def set_state(self, key: str, value: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO engine_state (key,value,updated_at) "
+                "VALUES (?,?,?)", (key, value, _now()))
+            self._conn.commit()
+
+    def get_state(self, key: str) -> Optional[str]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM engine_state WHERE key=?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def delete_state(self, key: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM engine_state WHERE key=?", (key,))
+            self._conn.commit()
+
+    def list_state(self, prefix: str) -> List[tuple]:
+        """[(key, value)] for keys starting with prefix, key-ordered."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT key, value FROM engine_state WHERE key LIKE ? ORDER BY key",
+                (prefix + "%",)).fetchall()
+        return rows
 
     def open_trailing_stop_ids(self) -> List[str]:
         """broker_order_ids of ALL working TRAILING_STOP SELLs (state
