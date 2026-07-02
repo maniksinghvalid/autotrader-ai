@@ -76,3 +76,15 @@ def test_sim_broker_account_reports_positions_loaded():
     br = SimBroker(quotes={"US.AAPL": 200.0})
     snap = br.get_account()
     assert snap.positions_loaded is True and snap.stale is False
+
+
+def test_recent_high_returns_configured_value():
+    from autotrader.sim_broker import SimBroker
+    b = SimBroker(quotes={"US.AAPL": 100.0}, recent_highs={"US.AAPL": 130.5})
+    assert b.recent_high("US.AAPL", 20) == 130.5
+
+
+def test_recent_high_none_when_unset():
+    from autotrader.sim_broker import SimBroker
+    b = SimBroker(quotes={"US.AAPL": 100.0})
+    assert b.recent_high("US.AAPL", 20) is None

@@ -15,7 +15,8 @@ from autotrader.options.chain import OptionQuote
 class SimBroker(Broker):
     def __init__(self, quotes: Dict[str, float], cash: float = 10000.0,
                  auto_fill: bool = True, option_chains=None,
-                 spread_bps: float = 0.0, slippage_bps: float = 0.0):
+                 spread_bps: float = 0.0, slippage_bps: float = 0.0,
+                 recent_highs: Optional[Dict[str, float]] = None):
         self._quotes = dict(quotes)
         self._cash = cash
         self._positions: Dict[str, Position] = {}
@@ -34,6 +35,7 @@ class SimBroker(Broker):
         # Failure injection for tests of the None-vs-empty broker contract.
         self.fail_open_orders = False
         self.fail_reconcile_fills = False
+        self._recent_highs = dict(recent_highs or {})
 
     def connect(self) -> None:
         return None
@@ -48,6 +50,9 @@ class SimBroker(Broker):
         if symbol not in self._quotes:
             return None
         return self._touch(symbol)
+
+    def recent_high(self, symbol: str, lookback: int) -> Optional[float]:
+        return self._recent_highs.get(symbol)
 
     def _touch(self, symbol: str):
         """Simulated (bid, ask) around the stored reference. Half-spread each side."""

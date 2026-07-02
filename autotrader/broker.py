@@ -25,6 +25,12 @@ class Broker:
         so brokers without touch data degrade to last-quote pricing."""
         return None
 
+    def recent_high(self, symbol: str, lookback: int) -> Optional[float]:
+        """Highest daily high over the last `lookback` COMPLETED trading days
+        (today's forming bar excluded), or None on data failure / insufficient
+        history. None fails safe upstream to 'no entry' — never a buy-at-open."""
+        raise NotImplementedError
+
     def get_option_chain(self, underlying: str, right: OptionRight,
                          dte_min: int = 0, dte_max: int = 100000) -> List["OptionQuote"]:
         """Return chain rows (strike/expiry/delta/premium) for one right, limited
