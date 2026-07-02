@@ -68,7 +68,7 @@ export FUTU_ACC_ID=<your SIMULATE acc_id>
 | Variable | Default (code) | Meaning |
 |---|---|---|
 | `RISK_TRADING_ENV` | `PAPER` | `PAPER` only in v1. `LIVE` is refused by `main()`. |
-| `RISK_ALLOWED_SYMBOLS` | *(empty → nothing tradable)* | Comma list, e.g. `US.AAPL,US.MSFT,US.NIO`. The first symbol is the strategy's symbol. |
+| `RISK_ALLOWED_SYMBOLS` | *(empty → nothing tradable)* | Comma list, e.g. `US.AAPL,US.MSFT,US.NIO`. The strategy's symbol is `STRATEGY_SYMBOL` if set (and in this list), else the lexicographically smallest symbol in the list. |
 | `RISK_MIN_CONFIDENCE` | `0.6` | Signals below this confidence are dropped. |
 | `RISK_MAX_ORDER_NOTIONAL` | `2000` | Per-order notional cap. |
 | `RISK_MAX_POSITION_QTY` | `100` | Resulting-position share cap (long-only). |
@@ -101,14 +101,15 @@ export FUTU_ACC_ID=<your SIMULATE acc_id>
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ENTRY_PRICE` | `0` | Threshold the strategy buys at (`price >= ENTRY_PRICE`). **See the warning below.** |
+| `ENTRY_BREAKOUT_LOOKBACK` | `20` | N completed daily bars for the breakout high. Higher = rarer, stronger breakouts. |
+| `STRATEGY_ENABLED` | `true` | Internal strategy on/off. `false` = the engine acts only on webhook signals + rebalance. |
 | `ORDER_QTY` | `1` | Shares per BUY entry. |
 | `AUTOTRADER_LOOP_INTERVAL` | `5` | Seconds between loop iterations. |
 | `AUTOTRADER_DB_PATH` | `~/.autotrader.db` | SQLite projection (positions/fills/perf). |
 | `AUTOTRADER_SIGNAL_INBOX` | *(unset → ingress off)* | Directory watched for external signal files (see §6). |
 | `OPEND_READY_TIMEOUT` | `30` | Seconds to wait for OpenD readiness at startup before halting. |
 
-> ⚠️ **`ENTRY_PRICE` matters.** With `ENTRY_PRICE=0`, the threshold `price >= entry` is always true, so the strategy wants to buy at market as soon as the entry window opens. Set it to the level you actually want to trigger an entry. Entries can still only fire inside the 09:45–15:30 window (§5).
+> ℹ️ **Breakout entry.** The internal strategy enters only on a new N-day high (`price > the highest high of the last ENTRY_BREAKOUT_LOOKBACK completed daily bars`). If the daily klines can't be fetched, it does **not** enter — it never buys at open. Entries still fire only inside the 09:45–15:30 ET window (§5).
 
 ---
 
@@ -119,7 +120,7 @@ cd /path/to/AutoTrader
 set -a && source config/risk.config && set +a       # export all RISK_* vars
 set -a && source config/secure.config && set +a     # AUTOTRADER_SLACK_WEBHOOK_URL (EOD report) + secrets
 export FUTU_ACC_ID=<your SIMULATE acc_id>
-export ENTRY_PRICE=<your trigger price>             # avoid the 0 = buy-now default
+export ENTRY_BREAKOUT_LOOKBACK=20   # N-day breakout window (default)
 
 python3 -m autotrader.main
 ```
@@ -264,7 +265,7 @@ RUN_LIVE=1 python3 -m pytest tests/test_moomoo_broker_live.py
 | `halting: OpenD not ready` at startup | OpenD GUI not running/authenticated, or wrong host/port. Start & log into OpenD; check `FUTU_OPEND_HOST/PORT`. Raise `OPEND_READY_TIMEOUT` if it's just slow. |
 | Dashboard returns **503** | Same — OpenD not ready yet. It will serve once readiness passes. |
 | `ModuleNotFoundError: pydantic` (or `moomoo`) | Installed into a different interpreter than the one running the trader. Reinstall into the same `python3` (see §2; PEP 668 → `--break-system-packages` or a venv). |
-| Bot buys immediately at startup | `ENTRY_PRICE` is `0` (default) → threshold always true. Set a real `ENTRY_PRICE`. |
+| Strategy never enters | No new N-day high yet, or the daily klines could not be fetched (fail-safe = no entry). Check logs for "breakout: no N-day high". |
 | BUY reports `ENTRY_CLOSED` | Outside the 09:45–15:30 ET entry window — by design. SELL exits still work. |
 | Order `REJECTED_BY_RISK` | A risk limit blocked it (notional / position / exposure / daily-loss / not in `RISK_ALLOWED_SYMBOLS` / stale snapshot). The reason is logged. |
 | External signal ignored | File moved to `inbox/rejected/` (malformed), confidence below `RISK_MIN_CONFIDENCE`, symbol not in `RISK_ALLOWED_SYMBOLS`, or the watchdog was unhealthy that tick. |
