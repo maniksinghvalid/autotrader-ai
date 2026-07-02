@@ -118,6 +118,42 @@ class MoomooBroker(Broker):
             return None
         return (bid, ask)
 
+    def recent_high(self, symbol: str, lookback: int):
+        """Highest daily high over the last `lookback` COMPLETED trading days
+        (today's forming bar excluded), or None on data failure / insufficient
+        history. Quote-context call — no trade refresh tokens. Fail-safe: None."""
+        from datetime import date as _date, timedelta
+        lookback = max(1, int(lookback))
+        today = _date.today()
+        start = (today - timedelta(days=lookback * 2 + 10)).strftime("%Y-%m-%d")
+        end = today.strftime("%Y-%m-%d")
+        try:
+            ret, data, _pk = self._quote.request_history_kline(
+                symbol, start=start, end=end, ktype=self._c.KLType.K_DAY,
+                autype=self._c.AuType.QFQ, max_count=lookback + 5)
+        except Exception as e:                       # never raise into the loop
+            logger.warning("recent_high %s: kline request raised: %s", symbol, e)
+            return None
+        if not self._ok(ret) or self._c.is_empty(data):
+            logger.info("recent_high %s: ret=%s %s", symbol, ret,
+                        data if isinstance(data, str) else "empty")
+            return None
+        highs = []
+        for i in range(len(data)):
+            row = data.iloc[i]
+            tk = str(self._c.safe_get(row, "time_key", "time", default=""))[:10]
+            if tk == end:                            # exclude today's forming bar
+                continue
+            h = self._c.safe_float(self._c.safe_get(row, "high", default=0))
+            if h and h > 0:
+                highs.append(h)
+        completed = highs[-lookback:]
+        if len(completed) < lookback:                # insufficient history -> no entry
+            logger.info("recent_high %s: only %d/%d completed bars", symbol,
+                        len(completed), lookback)
+            return None
+        return max(completed)
+
     def get_option_chain(self, underlying: str, right,
                          dte_min: int = 0, dte_max: int = 100000):  # pragma: no cover — live OpenD
         """Live option chain for `underlying` (e.g. US.AAPL) and `right`

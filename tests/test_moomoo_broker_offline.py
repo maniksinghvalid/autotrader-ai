@@ -39,6 +39,12 @@ class _FakeCommon:
     """Stand-in for the vendored common.py surface MoomooBroker uses."""
     RET_OK = 0
 
+    class KLType:
+        K_DAY = "K_DAY"
+
+    class AuType:
+        QFQ = "QFQ"
+
     def __init__(self, env="SIMULATE"):
         self._env_name = env
 
@@ -318,3 +324,68 @@ def test_get_touch_none_when_unavailable():
     b = _broker_with_trade(_EmptyOrderListTrade())
     b._quote = _FailQuoteCtx()
     assert b.get_touch("US.AAPL") is None
+
+
+# ---------------------------------------------------------------------------
+# recent_high — offline tests
+# ---------------------------------------------------------------------------
+
+class _FakeKlineQuoteCtx:
+    """Fake quote context whose request_history_kline returns a preset result."""
+    def __init__(self, ret, data):
+        self._ret = ret
+        self._data = data
+
+    def request_history_kline(self, code, *, start=None, end=None,
+                              ktype=None, autype=None, max_count=None):
+        return self._ret, self._data, None  # (ret, frame, page_req_key)
+
+
+def test_recent_high_returns_max_completed_high():
+    """Returns max high over completed bars; today's forming bar is excluded."""
+    from datetime import date
+    today_str = date.today().strftime("%Y-%m-%d")
+
+    b = MoomooBroker.__new__(MoomooBroker)
+    b._c = _FakeCommon()
+    rows = [
+        _Row(time_key="2026-06-28", high=125.0),
+        _Row(time_key="2026-06-29", high=128.0),
+        _Row(time_key=today_str, high=999.0),   # today's forming bar — must be excluded
+    ]
+    b._quote = _FakeKlineQuoteCtx(ret=0, data=_DF(rows))
+    # lookback=2, completed=[125.0, 128.0] -> max = 128.0
+    assert b.recent_high("US.AAPL", 2) == 128.0
+
+
+def test_recent_high_none_on_ret_error():
+    """Returns None when the kline request returns a non-OK ret code."""
+    b = MoomooBroker.__new__(MoomooBroker)
+    b._c = _FakeCommon()
+    b._quote = _FakeKlineQuoteCtx(ret=1, data="rate limited")
+    assert b.recent_high("US.AAPL", 20) is None
+
+
+def test_recent_high_none_on_insufficient_bars():
+    """Returns None when fewer completed bars exist than lookback requires."""
+    b = MoomooBroker.__new__(MoomooBroker)
+    b._c = _FakeCommon()
+    rows = [
+        _Row(time_key="2026-06-28", high=125.0),
+        _Row(time_key="2026-06-29", high=128.0),
+    ]
+    b._quote = _FakeKlineQuoteCtx(ret=0, data=_DF(rows))
+    assert b.recent_high("US.AAPL", 3) is None   # need 3, have only 2
+
+
+def test_recent_high_none_when_request_raises():
+    """Returns None (never raises) when the quote context throws an exception."""
+    b = MoomooBroker.__new__(MoomooBroker)
+    b._c = _FakeCommon()
+
+    class _RaisingQuoteCtx:
+        def request_history_kline(self, code, **kwargs):
+            raise ConnectionError("OpenD socket dropped")
+
+    b._quote = _RaisingQuoteCtx()
+    assert b.recent_high("US.AAPL", 20) is None
