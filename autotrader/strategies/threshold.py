@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from autotrader.domain import Position, Signal
+from autotrader.strategies.exits import manage_long_exit
 
 
 @dataclass(frozen=True)
@@ -31,19 +32,15 @@ class ThresholdStrategy:
     def __init__(self, params: StrategyParams):
         self.p = params
 
-    def evaluate(self, price: float, position: Optional[Position]) -> Optional[Signal]:
+    def evaluate(self, price: float, position: Optional[Position],
+                 ref_high: Optional[float] = None) -> Optional[Signal]:
+        # ref_high is accepted for a uniform engine call path (see BreakoutStrategy)
+        # and ignored here — this strategy enters on an absolute threshold.
         held = position.qty if position else 0
-        # Manage an open long: exit on stop or target.
-        if held > 0 and position is not None:
-            change = (price - position.avg_price) / position.avg_price
-            if change <= -self.p.stop_loss_pct:
-                return Signal(self.p.symbol, "SELL", self.p.confidence,
-                              f"stop-loss hit ({change:.2%})")
-            if change >= self.p.take_profit_pct:
-                return Signal(self.p.symbol, "SELL", self.p.confidence,
-                              f"take-profit hit ({change:.2%})")
-            return None
-        # Flat: enter on threshold cross.
+        if held > 0:
+            return manage_long_exit(self.p.symbol, price, position,
+                                    self.p.stop_loss_pct, self.p.take_profit_pct,
+                                    self.p.confidence)
         if held == 0 and price >= self.p.entry_price:
             return Signal(self.p.symbol, "BUY", self.p.confidence,
                           f"price {price} >= entry {self.p.entry_price}")
