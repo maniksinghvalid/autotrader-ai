@@ -250,6 +250,16 @@ class TradeEngine:
         from autotrader.limit_pricing import capped_limit_price  # local: keep import cheap
         return "LIMIT", capped_limit_price(side, ref_price, self._cfg)
 
+    def _order_working(self, ack) -> "Optional[bool]":
+        """Tri-state open-orders membership for ack's client_order_id.
+        True = still working; False = off the book (filled/terminal); None =
+        the query FAILED — the caller must treat the state as UNKNOWN, never
+        as 'filled' (review Important #1)."""
+        open_orders = self._b.get_open_orders()
+        if open_orders is None:
+            return None
+        return ack.client_order_id in {o.client_order_id for o in open_orders}
+
     def _submit_with_escalation(self, req: OrderRequest, snap, ref_price: float):
         """Submit a capped LIMIT; if it rests unfilled, cancel + re-peg once to the
         current touch; if still unfilled, submit MARKET so a risk exit completes.
@@ -266,11 +276,12 @@ class TradeEngine:
         ack = self._router.submit(req)
         ack_req = req
 
-        def _still_working(a) -> bool:
-            working = {o.client_order_id for o in self._b.get_open_orders()}
-            return a.client_order_id in working
-
-        if not _still_working(ack):
+        working = self._order_working(ack)
+        if working is None:
+            logger.warning("escalation: open-orders unknown — leaving %s as-is "
+                           "(no cancel, no fallback)", ack.client_order_id)
+            return ack, req
+        if not working:
             return ack, req   # marketable limit filled (or terminal) on the first pass
 
         # Stage 2: cancel the resting limit, re-peg to the CURRENT touch.
@@ -291,7 +302,12 @@ class TradeEngine:
         if evaluate(peg, snap, self._cfg, ref_price=cur).approved:
             ack = self._router.submit(peg)
             ack_req = peg
-            if not _still_working(ack):
+            working = self._order_working(ack)
+            if working is None:
+                logger.warning("escalation: open-orders unknown after re-peg — "
+                               "leaving %s as-is", ack.client_order_id)
+                return ack, peg
+            if not working:
                 return ack, peg
 
         # Stage 3: MARKET fallback so the order (esp. a risk exit) completes.
@@ -448,16 +464,20 @@ class TradeEngine:
         if ack.state is OrderState.FILLED:
             return True
 
-        def _still_working() -> bool:
-            working = {o.client_order_id for o in self._b.get_open_orders()}
-            return ack.client_order_id in working
+        def _resting() -> "Optional[bool]":
+            return self._order_working(ack)
 
-        if not _still_working():
+        first = _resting()
+        if first is False:
             return True   # already off the book (terminal/filled) at first look
         for attempt in range(1, self._hedge_confirm_attempts + 1):
             self._hedge_confirm_sleep(backoff_seconds(attempt))
-            if not _still_working():
+            state = _resting()
+            if state is False:
                 return True
+            if state is None:
+                logger.warning("hedge %s: open-orders query failed on fill-poll "
+                               "attempt %d — cannot confirm", req.symbol, attempt)
         logger.warning("hedge %s still resting after %d fill-poll attempts (%s)",
                        req.symbol, self._hedge_confirm_attempts, ack.state.value)
         return False

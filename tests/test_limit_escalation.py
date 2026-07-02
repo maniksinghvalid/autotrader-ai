@@ -128,3 +128,31 @@ def test_risk_vetoed_market_fallback_does_not_bypass_risk(tmp_path, monkeypatch)
     assert acks[-1]["state"] == OrderState.SUBMITTED.value
 
     assert result.action == "ORDER_PLACED"
+
+
+def test_unknown_book_aborts_escalation_no_market_no_cancel(tmp_path):
+    """If the open-orders query fails after the limit is submitted, the engine
+    must NOT declare it filled, NOT cancel, and NOT fall through to MARKET —
+    a rate-limited query must never cause a duplicate or phantom fill."""
+    b = SimBroker(quotes={"US.AAPL": 100.0}, cash=1_000_000.0, spread_bps=100.0)
+    b.fail_open_orders = True
+    eng = _engine(b, _cfg(order_cap_bps=5.0), tmp_path)
+    assert eng.tick().action == "ORDER_PLACED"
+    assert b.get_account().position_qty("US.AAPL") == 0   # no MARKET fallback fired
+    assert len(b._open) == 1                              # original limit still resting
+
+
+def test_hedge_confirm_never_confirms_on_unknown_book(tmp_path):
+    """A failed open-orders query during the hedge fill-poll must count as NOT
+    confirmed (spec W2) — the old code's `[]`-on-failure made a rate-limited
+    query read as 'off the book' == FILLED, silently skipping the §2.B
+    fallback stop and UNHEDGED alert."""
+    from autotrader.domain import OrderAck, OrderRequest, OrderState
+    b = SimBroker(quotes={"US.AAPL": 100.0}, cash=1_000_000.0)
+    eng = _engine(b, _cfg(), tmp_path)
+    b.fail_open_orders = True
+    ack = OrderAck("hedge-cid", "sim-77", OrderState.SUBMITTED, {})
+    req = OrderRequest(symbol="US.AAPL260918C110000", side="SELL", qty=1,
+                       order_type="MARKET", limit_price=None,
+                       client_order_id="hedge-cid")
+    assert eng._confirm_hedge_fill(ack, req) is False   # unknown != confirmed
