@@ -5,7 +5,7 @@ from datetime import date
 
 from autotrader.config import RiskConfig
 from autotrader.db import DB
-from autotrader.domain import OrderRequest
+from autotrader.domain import AccountSnapshot, OrderRequest
 from autotrader.main import TradeEngine
 from autotrader.sim_broker import SimBroker
 from autotrader.stops import StopManager
@@ -117,4 +117,34 @@ def test_rejected_attach_alerts_operator(tmp_path):
     res = mgr.reconcile(TODAY)
     assert res.attach_failed == 1 and res.attached == 0
     assert len(alerts) == 1 and "US.AAPL" in alerts[0]
+    db.close()
+
+
+def test_stale_snapshot_is_a_noop(tmp_path):
+    class StaleBroker(SimBroker):
+        def get_account(self):
+            return AccountSnapshot(cash=100000.0, total_assets=100000.0,
+                                    day_pnl=0.0, stale=True,
+                                    positions_loaded=False, positions=())
+
+    b = StaleBroker(quotes={"US.AAPL": 100.0}, cash=100000.0)
+    _seed_long(b)
+    mgr, db, _ = _mgr(tmp_path, b)
+    assert mgr.reconcile(TODAY) is None                 # no attach, no cancel
+    assert db.get_open_trailing_stop("US.AAPL") is None
+    assert b.get_open_orders() == []
+    db.close()
+
+
+def test_no_quote_alerts_operator(tmp_path):
+    alerts = []
+    b = SimBroker(quotes={"US.AAPL": 100.0}, cash=100000.0)
+    _seed_long(b)
+    del b._quotes["US.AAPL"]                            # quote now unavailable
+    mgr, db, _ = _mgr(tmp_path, b, alert_fn=alerts.append)
+    res = mgr.reconcile(TODAY)
+    assert res.skipped_no_quote == 1
+    assert len(alerts) == 1
+    assert "US.AAPL" in alerts[0]
+    assert "no quote" in alerts[0].lower() or "UNPROTECTED" in alerts[0]
     db.close()

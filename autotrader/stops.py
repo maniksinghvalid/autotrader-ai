@@ -94,7 +94,14 @@ class StopManager:
             price = self._b.get_quote(symbol)
             if price is None:
                 skipped += 1
-                logger.warning("stop reconcile: no quote for %s — cannot attach", symbol)
+                msg = (f"⚠ UNPROTECTED — {symbol} long {qty} has no working "
+                       f"trailing stop and no quote is available to attach one.")
+                logger.error(msg)
+                if self._alert is not None:
+                    try:
+                        self._alert(msg)
+                    except Exception as e:  # alerting must never break the loop
+                        logger.error("stop reconcile: alert failed: %s", e)
                 continue
             if self._engine.attach_trailing_stop(
                     symbol, qty, price, f"reattach-{today.isoformat()}"):
