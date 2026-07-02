@@ -30,6 +30,26 @@ logger = logging.getLogger("autotrader.engine")
 _HEDGE_CONFIRM_ATTEMPTS = 3   # bounded live fill-poll (paper fills at ack: 0 polls)
 
 
+def select_strategy_symbol(allowed_symbols, override: "Optional[str]" = None,
+                           default: str = "US.AAPL") -> str:
+    """Pick the internal strategy's single symbol deterministically.
+
+    `next(iter(frozenset))` is NOT stable across process restarts (Python string-hash
+    randomization), so the strategy silently traded a different holding each run. An
+    explicit STRATEGY_SYMBOL override wins when it is in the allowlist; otherwise the
+    lexicographically smallest allowed symbol is used (stable across restarts). Falls
+    back to `default` only when the allowlist is empty."""
+    if override:
+        ov = override.strip().upper()
+        if ov in allowed_symbols:
+            return ov
+        logger.warning("STRATEGY_SYMBOL=%r not in RISK_ALLOWED_SYMBOLS — ignoring, "
+                       "using deterministic pick", override)
+    if not allowed_symbols:
+        return default
+    return sorted(allowed_symbols)[0]
+
+
 def _post_slack(url, payload):
     # Lazy import keeps reporting (and its stdlib urllib use) out of the hot
     # import path for tests that never touch alerts.
@@ -49,13 +69,21 @@ class TradeEngine:
                  entry_gate: "Optional[EntryGate]" = None, today_fn=None,
                  hedge_confirm_attempts: int = _HEDGE_CONFIRM_ATTEMPTS,
                  hedge_confirm_sleep=None,
-                 alert_url: "Optional[str]" = None, alert_post=None):
+                 alert_url: "Optional[str]" = None, alert_post=None,
+                 session_id: "Optional[str]" = None):
         self._b = broker
         self._strat = strategy
         self._cfg = cfg
         self._qty = order_qty
         self._router = OrderRouter(broker, audit_path=audit_path)
         self._signal_seq = 0
+        # Per-session prefix so signal ids stay unique ACROSS process restarts. The
+        # seq resets to 1 each start; signals.signal_id is UNIQUE and record_signal
+        # is INSERT OR IGNORE, so a bare "sig-N" silently collides with a prior run's
+        # row (and, via make_client_order_id, risks cid collisions). Default is a
+        # fresh nonce per engine/process; tests may inject a fixed id.
+        import uuid
+        self._session_id = session_id or uuid.uuid4().hex[:8]
         self._db = db
         self._gate = entry_gate
         self._today_fn = today_fn or date.today
@@ -156,7 +184,7 @@ class TradeEngine:
             )
 
         self._signal_seq += 1
-        signal_id = f"sig-{self._signal_seq}"
+        signal_id = f"sig-{self._session_id}-{self._signal_seq}"
         if self._db:
             self._db.record_signal(
                 symbol=signal.symbol, direction=signal.direction,
@@ -293,7 +321,7 @@ class TradeEngine:
         from autotrader.options.planner import build_overlay_plan, OverlayPlan
 
         self._signal_seq += 1
-        signal_id = f"sig-{self._signal_seq}"
+        signal_id = f"sig-{self._session_id}-{self._signal_seq}"
         plan = build_overlay_plan(signal, snap, self._b, self._cfg,
                                   signal_id, self._today_fn())
         if not isinstance(plan, OverlayPlan):
@@ -713,10 +741,16 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
         return 1
 
     from autotrader.moomoo_broker import MoomooBroker
-    symbol = next(iter(cfg.allowed_symbols), "US.AAPL")
+    symbol = select_strategy_symbol(cfg.allowed_symbols, os.getenv("STRATEGY_SYMBOL"))
+    entry_price = float(os.getenv("ENTRY_PRICE", "0"))
+    if entry_price <= 0:
+        logger.warning("ENTRY_PRICE=%s: threshold 'price >= entry' is always true — the "
+                       "strategy will buy %s at market when the entry window opens. Set "
+                       "ENTRY_PRICE to a real trigger to avoid buy-at-open.", entry_price, symbol)
     strat = ThresholdStrategy(StrategyParams(
-        symbol=symbol, entry_price=float(os.getenv("ENTRY_PRICE", "0")),
+        symbol=symbol, entry_price=entry_price,
         stop_loss_pct=0.05, take_profit_pct=0.10, confidence=0.7))
+    logger.info("internal strategy: symbol=%s entry_price=%s", symbol, entry_price)
     audit = os.path.join(os.path.expanduser("~"), ".futu_trade_audit.jsonl")
     broker = MoomooBroker()
     broker.connect()
