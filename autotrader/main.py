@@ -246,14 +246,9 @@ class TradeEngine:
         if signal.overlay is not None:
             return self._route_overlay(signal, snap)
 
-        if self._db:
-            self._db.record_performance(
-                day_pnl=snap.day_pnl,
-                total_assets=snap.total_assets,
-                cash=snap.cash,
-                gross_exposure=snap.gross_exposure(),
-                unrealized_pnl=snap.unrealized_pnl,
-            )
+        # W7: performance rows are written ONLY by SessionRunner._record_perf
+        # (fills-derived realized, quote-based unrealized) — never from engine
+        # paths with raw broker figures the EOD report distrusts.
 
         self._signal_seq += 1
         signal_id = f"sig-{self._session_id}-{self._signal_seq}"
@@ -803,11 +798,9 @@ class TradeEngine:
         halt flag. Returns the RiskAction name."""
         snap = self._b.get_account()
         action = risk_evaluate(snap, self._cfg)
-        if self._db:
-            self._db.record_performance(
-                day_pnl=snap.day_pnl, total_assets=snap.total_assets,
-                cash=snap.cash, gross_exposure=snap.gross_exposure(),
-                unrealized_pnl=snap.unrealized_pnl)
+        # W7: performance rows are written ONLY by SessionRunner._record_perf
+        # (fills-derived realized, quote-based unrealized) — never from engine
+        # paths with raw broker figures the EOD report distrusts.
         if action is RiskAction.GATE:
             if self._gate is not None:
                 self._gate.close()

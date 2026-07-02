@@ -205,3 +205,32 @@ def test_eod_report_without_reporter_is_noop(tmp_path):
     runner, db, gate = _build(tmp_path, b)   # reporter defaults to None
     runner.run_once(_dt(16, 31))            # must not raise
     db.close()
+
+
+def test_engine_routes_never_overwrite_performance_row(tmp_path):
+    """W7: the runner's fills-derived EOD write is authoritative; a signal
+    routed afterwards (e.g. a post-16:15 stop SELL — SELLs are never gated)
+    must not replace it with raw broker day_pnl."""
+    b = SimBroker(quotes={"US.AAPL": 101.0}, cash=100000.0)
+    runner, db, gate = _build(tmp_path, b)
+    runner.run_once(_dt(9, 46))            # ENTRY_OPEN + BUY placed
+    runner.run_once(_dt(16, 16))           # EOD job: authoritative perf write
+    before = db._conn.execute(
+        "SELECT day_pnl, updated_at FROM performance").fetchone()
+    # a SELL routed after the EOD write (engine path)
+    from autotrader.domain import Signal
+    runner._engine.submit_external_signal(
+        Signal(symbol="US.AAPL", direction="SELL", confidence=0.9, rationale="stop"))
+    after = db._conn.execute(
+        "SELECT day_pnl, updated_at FROM performance").fetchone()
+    assert after == before                 # row untouched by the engine route
+    db.close()
+
+
+def test_risk_check_jobs_record_perf_via_runner(tmp_path):
+    b = SimBroker(quotes={"US.AAPL": 90.0}, cash=100000.0)   # 90 < 100: NO_SIGNAL
+    runner, db, gate = _build(tmp_path, b)
+    runner.run_once(_dt(13, 31))           # RISK_CHECK_MID
+    row = db._conn.execute("SELECT COUNT(*) FROM performance").fetchone()
+    assert row[0] == 1                     # runner wrote it (engine no longer does)
+    db.close()

@@ -110,8 +110,11 @@ def test_tick_records_signal_and_trade_to_db(tmp_path):
     assert sig_count == 1, "signal must be recorded"
     trade_count = db._conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
     assert trade_count == 1, "trade must be recorded"
+    # W7: performance rows are written ONLY by SessionRunner._record_perf
+    # (RISK_CHECK/RISK_SWEEP/EOD jobs) — the engine's signal route never
+    # writes one, so a bare tick() must leave the table empty.
     perf_count = db._conn.execute("SELECT COUNT(*) FROM performance").fetchone()[0]
-    assert perf_count == 1, "performance snapshot must be recorded"
+    assert perf_count == 0, "engine route must not record a performance snapshot"
     db.close()
 
 

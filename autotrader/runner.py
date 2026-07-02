@@ -114,6 +114,9 @@ class SessionRunner:
             self._engine.rebalance(now)
         elif job in (RISK_CHECK_MID, RISK_CHECK_LATE):
             self._engine.apply_risk_check(now)
+            # W7: the runner is the sole performance writer.
+            if self._broker is not None and self._db is not None:
+                self._record_perf()
         elif job == RISK_SWEEP:
             self._gate.close()
             if self._broker is not None and self._db is not None:
