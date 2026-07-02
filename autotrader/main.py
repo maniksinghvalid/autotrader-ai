@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 from autotrader.broker import Broker
 from autotrader.config import RiskConfig, load_risk_config
@@ -109,7 +109,33 @@ class TradeEngine:
         # and replayed by flush_deferred_entries() when entries open. Keyed latest-
         # wins per (symbol, direction) so the queue cannot grow unbounded and a
         # stale duplicate never fires alongside a fresh signal.
-        self._deferred_entries: List[Signal] = []
+        # (deferred_on ISO date, Signal). Persisted to DB.engine_state (W4) so a
+        # crash between a pre-market defer and the 09:45 flush cannot lose the
+        # signal; rows from an earlier session date EXPIRE rather than replaying
+        # ~18h stale.
+        self._deferred_entries: "List[Tuple[str, Signal]]" = []
+        if self._db is not None:
+            self._restore_deferred_entries()
+
+    def _restore_deferred_entries(self) -> None:
+        import json
+        today = self._today_fn().isoformat()
+        for key, raw in self._db.list_state("deferred:"):
+            try:
+                d = json.loads(raw)
+            except ValueError:
+                logger.error("deferred entry %s: unreadable payload — dropped", key)
+                self._db.delete_state(key)
+                continue
+            if d.get("deferred_on") != today:
+                logger.warning("deferred entry %s expired (deferred_on=%s, today=%s) "
+                               "— dropped, not routed", key, d.get("deferred_on"), today)
+                self._db.delete_state(key)
+                continue
+            self._deferred_entries.append((d["deferred_on"], Signal(
+                symbol=d["symbol"], direction=d["direction"],
+                confidence=d["confidence"], rationale=d["rationale"],
+                stop_price=d.get("stop_price"))))
 
     def tick(self) -> TickResult:
         if self._gate is not None and self._gate.halted:
@@ -153,24 +179,46 @@ class TradeEngine:
 
     def _defer_entry(self, signal: Signal) -> None:
         """Queue an external entry for the next open, latest-wins per (symbol,
-        direction) so a re-sent signal supersedes rather than stacks."""
+        direction), persisted so a restart cannot lose it (W4)."""
+        deferred_on = self._today_fn().isoformat()
         self._deferred_entries = [
-            s for s in self._deferred_entries
-            if (s.symbol, s.direction) != (signal.symbol, signal.direction)
+            e for e in self._deferred_entries
+            if (e[1].symbol, e[1].direction) != (signal.symbol, signal.direction)
         ]
-        self._deferred_entries.append(signal)
+        self._deferred_entries.append((deferred_on, signal))
+        if self._db is not None:
+            import json
+            self._db.set_state(
+                f"deferred:{signal.symbol}:{signal.direction}",
+                json.dumps({"symbol": signal.symbol, "direction": signal.direction,
+                            "confidence": signal.confidence,
+                            "rationale": signal.rationale,
+                            "stop_price": signal.stop_price,
+                            "deferred_on": deferred_on}))
 
     def flush_deferred_entries(self) -> "List[TickResult]":
-        """Replay entries deferred while the window was closed. No-op unless entries
-        are now open (so a still-closed flush keeps them queued, never lost). Each is
-        re-routed through submit_external_signal, so it is re-sized and re-risk-checked
-        against the CURRENT snapshot/quote — never the stale pre-market ones."""
+        """Replay entries deferred while the window was closed. No-op unless
+        entries are now open. Each is re-routed through submit_external_signal
+        (re-sized, re-risk-checked against CURRENT data). Entries deferred on an
+        EARLIER session date expire here instead of replaying stale."""
         if self._gate is None or not self._gate.entries_enabled:
             return []
         pending, self._deferred_entries = self._deferred_entries, []
-        results = [self.submit_external_signal(s) for s in pending]
+        today = self._today_fn().isoformat()
+        results: "List[TickResult]" = []
+        for deferred_on, sig in pending:
+            key = f"deferred:{sig.symbol}:{sig.direction}"
+            if deferred_on != today:
+                logger.warning("deferred %s %s expired (deferred_on=%s) — not routed",
+                               sig.direction, sig.symbol, deferred_on)
+                if self._db is not None:
+                    self._db.delete_state(key)
+                continue
+            results.append(self.submit_external_signal(sig))
+            if self._db is not None:
+                self._db.delete_state(key)
         if pending:
-            logger.info("flushed %d deferred entry(ies) at entry-open", len(pending))
+            logger.info("flushed %d deferred entry(ies) at entry-open", len(results))
         return results
 
     def _account_for_tick(self):

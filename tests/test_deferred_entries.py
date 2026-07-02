@@ -21,13 +21,14 @@ def _cfg(**over):
     return RiskConfig(**base)
 
 
-def _engine(broker, gate, cfg=None, qty=10, tmp_path=None):
+def _engine(broker, gate, cfg=None, qty=10, tmp_path=None, db=None, today=None):
     strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=100.0,
                                              stop_loss_pct=0.05, take_profit_pct=0.10,
                                              confidence=0.7))
     return TradeEngine(broker=broker, strategy=strat, cfg=cfg or _cfg(),
                        order_qty=qty, audit_path=str(tmp_path / "audit.jsonl"),
-                       entry_gate=gate)
+                       entry_gate=gate, db=db,
+                       today_fn=(lambda: today) if today else None)
 
 
 def _buy(sym="US.AAPL", conf=0.9):
@@ -88,4 +89,49 @@ def test_redeferring_same_symbol_keeps_only_the_latest(tmp_path):
     eng.submit_external_signal(_buy(conf=0.7))
     eng.submit_external_signal(_buy(conf=0.95))
     assert len(eng._deferred_entries) == 1
-    assert eng._deferred_entries[0].confidence == 0.95
+    assert eng._deferred_entries[0][1].confidence == 0.95
+
+
+def test_deferred_entry_survives_restart(tmp_path):
+    """Crash between the pre-market defer and the 09:45 flush must not lose
+    the signal (review Important #6a) — the deferral is persisted and a NEW
+    engine on the same DB replays it when entries open."""
+    from datetime import date
+    from autotrader.db import DB
+    db = DB(str(tmp_path / "d.db"))
+    b = SimBroker(quotes={"US.AAPL": 101.0}, cash=100000.0)
+    eng1 = _engine(b, EntryGate(enabled=False), tmp_path=tmp_path,
+                   db=db, today=date(2026, 7, 6))
+    assert eng1.submit_external_signal(_buy()).action == "ENTRY_DEFERRED"
+
+    # "restart": a fresh engine on the same DB restores the deferral
+    gate2 = EntryGate(enabled=False)
+    eng2 = _engine(b, gate2, tmp_path=tmp_path, db=db, today=date(2026, 7, 6))
+    gate2.open()
+    results = eng2.flush_deferred_entries()
+    assert [r.action for r in results] == ["ORDER_PLACED"]
+    assert b.get_account().position_qty("US.AAPL") == 10
+    assert db.list_state("deferred:") == []            # consumed
+    db.close()
+
+
+def test_stale_deferred_entry_expires_not_routed(tmp_path):
+    """A deferral from a previous session date must NOT replay ~18h stale at
+    the next open (review Important #6b) — it expires: logged, deleted, never
+    routed."""
+    from datetime import date
+    from autotrader.db import DB
+    db = DB(str(tmp_path / "d.db"))
+    b = SimBroker(quotes={"US.AAPL": 101.0}, cash=100000.0)
+    eng1 = _engine(b, EntryGate(enabled=False), tmp_path=tmp_path,
+                   db=db, today=date(2026, 7, 6))
+    assert eng1.submit_external_signal(_buy()).action == "ENTRY_DEFERRED"
+
+    # next day: the restore path expires the persisted row
+    gate2 = EntryGate(enabled=False)
+    eng2 = _engine(b, gate2, tmp_path=tmp_path, db=db, today=date(2026, 7, 7))
+    gate2.open()
+    assert eng2.flush_deferred_entries() == []
+    assert db.list_state("deferred:") == []            # expired + deleted
+    assert b.get_account().position_qty("US.AAPL") == 0
+    db.close()
