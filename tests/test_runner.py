@@ -234,3 +234,29 @@ def test_risk_check_jobs_record_perf_via_runner(tmp_path):
     row = db._conn.execute("SELECT COUNT(*) FROM performance").fetchone()
     assert row[0] == 1                     # runner wrote it (engine no longer does)
     db.close()
+
+
+def test_risk_check_syncs_fills_before_recording_perf(tmp_path):
+    """Final-review Important finding (W7 follow-up): RISK_CHECK_MID/LATE must
+    ground_truth_sync BEFORE _record_perf, mirroring RISK_SWEEP/EOD. Otherwise a
+    HALT triggered inside apply_risk_check skips the later RISK_SWEEP/EOD sync,
+    leaving the RISK_CHECK's stale-fills perf row as the day's last write."""
+    # Quote stays below the strategy's entry_price (100.0) so the engine's own
+    # tick never auto-places a BUY — the only fill in play is the one we seed
+    # directly at the broker below.
+    b = SimBroker(quotes={"US.AAPL": 90.0}, cash=100000.0)
+    runner, db, gate = _build(tmp_path, b)
+    # Run once well before RISK_CHECK_MID so PRE_OPEN_SYNC/ENTRY_OPEN/REBALANCE
+    # catch-up jobs fire and settle first, without yet seeing today's fill.
+    runner.run_once(_dt(12, 31))
+    # Place a fill directly at the broker — it exists there but is NOT yet
+    # reflected in the DB's fills table (no sync has happened since it filled).
+    b.place_order(OrderRequest(symbol="US.AAPL", side="BUY", qty=5,
+                               order_type="LIMIT", limit_price=150.0,
+                               client_order_id="seed"))
+    assert db._conn.execute("SELECT COUNT(*) FROM fills").fetchone()[0] == 0
+    runner.run_once(_dt(13, 31))           # RISK_CHECK_MID fires
+    assert db._conn.execute("SELECT COUNT(*) FROM fills").fetchone()[0] == 1
+    row = db._conn.execute("SELECT day_pnl FROM performance").fetchone()
+    assert row is not None
+    db.close()

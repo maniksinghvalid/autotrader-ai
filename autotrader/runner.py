@@ -114,8 +114,11 @@ class SessionRunner:
             self._engine.rebalance(now)
         elif job in (RISK_CHECK_MID, RISK_CHECK_LATE):
             self._engine.apply_risk_check(now)
-            # W7: the runner is the sole performance writer.
+            # W7 fix: sync fills BEFORE recording perf (mirrors RISK_SWEEP/EOD) so a HALT
+            # during this job — which skips RISK_SWEEP/EOD for the rest of the day — doesn't
+            # leave the day's LAST performance row computed off stale/under-counted fills.
             if self._broker is not None and self._db is not None:
+                ground_truth_sync(self._broker, self._db)
                 self._record_perf()
         elif job == RISK_SWEEP:
             self._gate.close()
