@@ -899,7 +899,8 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
     from autotrader.market_calendar import is_trading_day
     runner = SessionRunner(
         engine=engine, broker=broker, db=db, gate=gate,
-        scheduler=LifecycleScheduler(), watchdog=watchdog, clock=Clock(),
+        scheduler=LifecycleScheduler(state_get=db.get_state, state_set=db.set_state),
+        watchdog=watchdog, clock=Clock(),
         sleep=time.sleep,
         loop_interval=float(os.getenv("AUTOTRADER_LOOP_INTERVAL", "5")),
         signal_inbox=inbox,

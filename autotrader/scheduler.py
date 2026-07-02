@@ -33,15 +33,35 @@ _SCHEDULE: Tuple[Tuple[str, time], ...] = (
 )
 
 
+# Jobs that must fire at most once per day even across a process restart —
+# a restart after 16:30 must not re-post the EOD Slack report or re-run the
+# rebalance. Everything else (syncs, gate open/close, risk checks) DELIBERATELY
+# re-fires on catch-up: that is the halt-recovery behavior after a mid-day
+# restart (do not "fix" it by adding jobs here casually).
+AT_MOST_ONCE = frozenset({REBALANCE, EOD_CANCEL_ORDERS, EOD_REPORT})
+
+
 class LifecycleScheduler:
-    def __init__(self) -> None:
+    def __init__(self, state_get=None, state_set=None) -> None:
         self._last_fired: Dict[str, str] = {}  # job name -> ISO date it last fired
+        # Optional durable backing (DB.get_state/set_state) for AT_MOST_ONCE jobs.
+        self._state_get = state_get
+        self._state_set = state_set
+
+    def _last(self, name: str):
+        if name in self._last_fired:
+            return self._last_fired[name]
+        if name in AT_MOST_ONCE and self._state_get is not None:
+            return self._state_get(f"sched:{name}")
+        return None
 
     def poll(self, now: datetime) -> List[str]:
         today = now.date().isoformat()
         due: List[str] = []
         for name, sched in _SCHEDULE:
-            if now.time() >= sched and self._last_fired.get(name) != today:
+            if now.time() >= sched and self._last(name) != today:
                 self._last_fired[name] = today
+                if name in AT_MOST_ONCE and self._state_set is not None:
+                    self._state_set(f"sched:{name}", today)
                 due.append(name)
         return due

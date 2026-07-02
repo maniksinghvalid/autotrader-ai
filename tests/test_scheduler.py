@@ -68,3 +68,36 @@ def test_eod_report_fires_after_eod_flatten():
     s = LifecycleScheduler()
     due = s.poll(_dt(16, 31))               # first poll catches up both, in order
     assert due.index(EOD_FLATTEN) < due.index(EOD_REPORT)
+
+
+def test_at_most_once_jobs_survive_restart():
+    """Restart after 16:30 must NOT re-post the EOD Slack report or re-run
+    REBALANCE (review Minor #8) — their last-fired dates persist."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from autotrader.scheduler import (LifecycleScheduler, EOD_REPORT, REBALANCE,
+                                      RISK_CHECK_LATE)
+    _NY = ZoneInfo("America/New_York")
+    store = {}
+    s1 = LifecycleScheduler(state_get=store.get, state_set=store.__setitem__)
+    fired = s1.poll(datetime(2026, 7, 6, 16, 31, tzinfo=_NY))
+    assert EOD_REPORT in fired and REBALANCE in fired
+
+    # "restart": a NEW scheduler over the same persisted state
+    s2 = LifecycleScheduler(state_get=store.get, state_set=store.__setitem__)
+    refired = s2.poll(datetime(2026, 7, 6, 16, 35, tzinfo=_NY))
+    assert EOD_REPORT not in refired and REBALANCE not in refired
+    # catch-up of NON-at-most-once jobs is deliberately preserved (halt recovery)
+    assert RISK_CHECK_LATE in refired
+
+
+def test_at_most_once_fires_fresh_next_day():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from autotrader.scheduler import LifecycleScheduler, EOD_REPORT
+    _NY = ZoneInfo("America/New_York")
+    store = {}
+    s1 = LifecycleScheduler(state_get=store.get, state_set=store.__setitem__)
+    s1.poll(datetime(2026, 7, 6, 16, 31, tzinfo=_NY))
+    s2 = LifecycleScheduler(state_get=store.get, state_set=store.__setitem__)
+    assert EOD_REPORT in s2.poll(datetime(2026, 7, 7, 16, 31, tzinfo=_NY))
