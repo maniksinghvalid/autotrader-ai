@@ -128,9 +128,13 @@ class MoomooBroker(Broker):
         start = (today - timedelta(days=lookback * 2 + 10)).strftime("%Y-%m-%d")
         end = today.strftime("%Y-%m-%d")
         try:
+            # max_count must cover the ENTIRE [start, end] window: the SDK returns
+            # bars in ascending (oldest-first) order and truncates from the front
+            # when max_count is smaller than the window.  Using just lookback+5 would
+            # drop the most-recent bars — the ones we actually want.
             ret, data, _pk = self._quote.request_history_kline(
                 symbol, start=start, end=end, ktype=self._c.KLType.K_DAY,
-                autype=self._c.AuType.QFQ, max_count=lookback + 5)
+                autype=self._c.AuType.QFQ, max_count=2 * lookback + 15)
         except Exception as e:                       # never raise into the loop
             logger.warning("recent_high %s: kline request raised: %s", symbol, e)
             return None
@@ -145,7 +149,7 @@ class MoomooBroker(Broker):
             if tk == end:                            # exclude today's forming bar
                 continue
             h = self._c.safe_float(self._c.safe_get(row, "high", default=0))
-            if h and h > 0:
+            if h > 0:
                 highs.append(h)
         completed = highs[-lookback:]
         if len(completed) < lookback:                # insufficient history -> no entry

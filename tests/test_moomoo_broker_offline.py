@@ -389,3 +389,57 @@ def test_recent_high_none_when_request_raises():
 
     b._quote = _RaisingQuoteCtx()
     assert b.recent_high("US.AAPL", 20) is None
+
+
+class _TruncatingKlineQuoteCtx:
+    """Fake quote context that RESPECTS max_count by returning only the first
+    max_count bars (oldest-first), mimicking the SDK's ascending-truncation
+    behaviour.  The simple _FakeKlineQuoteCtx above ignores max_count and would
+    not expose the bug fixed by changing max_count from lookback+5 to
+    2*lookback+15."""
+    def __init__(self, all_rows):
+        self._all_rows = all_rows  # ascending: oldest bar first
+
+    def request_history_kline(self, code, *, start=None, end=None,
+                              ktype=None, autype=None, max_count=None):
+        rows = self._all_rows
+        if max_count is not None:
+            rows = rows[:max_count]
+        return 0, _DF(rows), None
+
+
+def test_recent_high_max_count_covers_full_window():
+    """Regression for max_count truncation bug (fixed: lookback+5 -> 2*lookback+15).
+
+    30 ascending bars are provided (oldest first).  Bars 0-14 have high=50.0
+    (stale); bars 15-28 have high=115+(i-15) (119..128 for the 10 most-recent
+    completed); bar 29 is today's forming bar (excluded by the date check).
+
+    lookback=10 -> correct recent_high = max of bars 19-28 = 128.0.
+
+    With the old max_count=lookback+5=15 the fake returns only bars 0-14 (all
+    50.0), so completed=highs[-10:]=[50]*10, max=50.0 != 128.0 -> assertion
+    FAILS under old code, PASSES under the fix.
+    """
+    from datetime import date, timedelta
+    today = date.today()
+
+    # Build 30 ascending daily bars: bar i represents (today - (29-i)) days ago.
+    rows = []
+    for i in range(30):
+        day = (today - timedelta(days=29 - i)).strftime("%Y-%m-%d")
+        if i < 15:
+            high = 50.0                        # stale bars, within old window only
+        elif i < 29:
+            high = 115.0 + (i - 15)           # bars 15-28: highs 115..128
+        else:
+            high = 999.0                       # today's forming bar — must be skipped
+        rows.append(_Row(time_key=day, high=high))
+
+    b = MoomooBroker.__new__(MoomooBroker)
+    b._c = _FakeCommon()
+    b._quote = _TruncatingKlineQuoteCtx(rows)
+
+    # lookback=10: the 10 most-recent completed bars are 19-28,
+    # highs = 119, 120, 121, 122, 123, 124, 125, 126, 127, 128 -> max 128.0
+    assert b.recent_high("US.AAPL", 10) == 128.0
