@@ -147,7 +147,16 @@ def _evaluate_option_leg(req: OrderRequest, snapshot: AccountSnapshot,
     abs_ceiling = cfg.max_option_premium_per_trade  # optional absolute $ ceiling; 0 = off
     gross = req.qty * premium * opt.multiplier      # premium dollars (paid or collected)
 
-    if req.side == "SELL" and req.position_effect == "OPEN":
+    if req.position_effect == "CLOSE":
+        # Exit legs (buy-to-close / sell-to-close) are NEVER premium-budget
+        # gated — the mirror of the equity reduce-only exemption: closing an
+        # option position cannot increase the premium at risk, and the risk
+        # system must never block its own exit (spec W6). Env / stale /
+        # allow-list / premium-sanity / contract-cap checks above still apply,
+        # and the daily-loss guard below is OPEN-only already.
+        return RiskDecision(True, "OK")
+
+    if req.side == "SELL":
         # Defined-risk coverage: shares (CALLs only) or a long leg in the same plan.
         # Shares never cover a short PUT — only a long put bounds it.
         need = req.qty  # contracts
