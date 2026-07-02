@@ -299,3 +299,53 @@ def test_sized_qty_clamped_to_pass_risk_core(tmp_path):
                stop_price=98.0))
     assert res.action == "ORDER_PLACED"
     assert b.get_account().position_qty("US.AAPL") == 50
+
+
+def test_breakout_tick_places_on_new_high(tmp_path):
+    from autotrader.strategies.breakout import BreakoutParams, BreakoutStrategy
+    from autotrader.breakout_reference import BreakoutReference
+    from datetime import date
+    b = SimBroker(quotes={"US.AAPL": 131.0}, cash=100000.0,
+                  recent_highs={"US.AAPL": 130.5})
+    strat = BreakoutStrategy(BreakoutParams("US.AAPL", 0.05, 0.10, 0.7))
+    ref = BreakoutReference(b, 20, today_fn=lambda: date(2026, 7, 2))
+    eng = TradeEngine(broker=b, strategy=strat, cfg=_cfg(), order_qty=10,
+                      audit_path=str(tmp_path / "audit.jsonl"), breakout_ref=ref)
+    assert eng.tick().action == "ORDER_PLACED"
+    assert b.get_account().position_qty("US.AAPL") == 10
+
+
+def test_breakout_tick_no_signal_below_high(tmp_path):
+    from autotrader.strategies.breakout import BreakoutParams, BreakoutStrategy
+    from autotrader.breakout_reference import BreakoutReference
+    from datetime import date
+    b = SimBroker(quotes={"US.AAPL": 129.0}, cash=100000.0,
+                  recent_highs={"US.AAPL": 130.5})
+    strat = BreakoutStrategy(BreakoutParams("US.AAPL", 0.05, 0.10, 0.7))
+    ref = BreakoutReference(b, 20, today_fn=lambda: date(2026, 7, 2))
+    eng = TradeEngine(broker=b, strategy=strat, cfg=_cfg(), order_qty=10,
+                      audit_path=str(tmp_path / "audit.jsonl"), breakout_ref=ref)
+    assert eng.tick().action == "NO_SIGNAL"
+
+
+def test_breakout_tick_no_entry_without_reference(tmp_path):
+    from autotrader.strategies.breakout import BreakoutParams, BreakoutStrategy
+    from autotrader.breakout_reference import BreakoutReference
+    from datetime import date
+    b = SimBroker(quotes={"US.AAPL": 999.0}, cash=100000.0)   # no recent_highs -> None
+    strat = BreakoutStrategy(BreakoutParams("US.AAPL", 0.05, 0.10, 0.7))
+    ref = BreakoutReference(b, 20, today_fn=lambda: date(2026, 7, 2))
+    eng = TradeEngine(broker=b, strategy=strat, cfg=_cfg(), order_qty=10,
+                      audit_path=str(tmp_path / "audit.jsonl"), breakout_ref=ref)
+    assert eng.tick().action == "NO_SIGNAL"   # fail-safe: no ref, no buy
+
+
+def test_disabled_strategy_tick_is_noop(tmp_path):
+    strat = ThresholdStrategy(StrategyParams(symbol="US.AAPL", entry_price=100.0,
+                                             stop_loss_pct=0.05, take_profit_pct=0.10,
+                                             confidence=0.7))
+    b = SimBroker(quotes={"US.AAPL": 101.0}, cash=100000.0)
+    eng = TradeEngine(broker=b, strategy=strat, cfg=_cfg(), order_qty=10,
+                      audit_path=str(tmp_path / "audit.jsonl"), strategy_enabled=False)
+    assert eng.tick().action == "STRATEGY_DISABLED"
+    assert b.get_account().position_qty("US.AAPL") == 0

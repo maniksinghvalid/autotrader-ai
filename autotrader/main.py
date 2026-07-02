@@ -71,9 +71,12 @@ class TradeEngine:
                  hedge_confirm_sleep=None,
                  escalation_sleep=None,
                  alert_url: "Optional[str]" = None, alert_post=None,
-                 session_id: "Optional[str]" = None, snapshot_cache_ticks: int = 1):
+                 session_id: "Optional[str]" = None, snapshot_cache_ticks: int = 1,
+                 strategy_enabled: bool = True, breakout_ref=None):
         self._b = broker
         self._strat = strategy
+        self._strategy_enabled = strategy_enabled
+        self._breakout_ref = breakout_ref
         self._cfg = cfg
         self._qty = order_qty
         self._router = OrderRouter(broker, audit_path=audit_path)
@@ -144,6 +147,8 @@ class TradeEngine:
     def tick(self) -> TickResult:
         if self._gate is not None and self._gate.halted:
             return TickResult("HALTED")
+        if not self._strategy_enabled:
+            return TickResult("STRATEGY_DISABLED")
         snap = self._account_for_tick()
         symbol = self._strat.p.symbol
         price = self._b.get_quote(symbol)
@@ -151,7 +156,8 @@ class TradeEngine:
             return TickResult("NO_QUOTE", symbol)
 
         pos = next((p for p in snap.positions if p.symbol == symbol), None)
-        signal = self._strat.evaluate(price=price, position=pos)
+        ref_high = self._breakout_ref.high(symbol) if self._breakout_ref is not None else None
+        signal = self._strat.evaluate(price=price, position=pos, ref_high=ref_high)
         if signal is None:
             return TickResult("NO_SIGNAL")
         # Routing decisions never run on cached data: drop the cache and
