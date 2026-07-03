@@ -310,7 +310,8 @@ class TradeEngine:
         # Broker-resting trailing stop: attach a protective TRAILING_STOP SELL
         # right after a BUY entry places (research R5 — survives an OpenD outage).
         if signal.direction == "BUY" and self._cfg.trailing_stop_pct > 0:
-            self._attach_trailing_stop(signal.symbol, eff_qty, price, signal_id)
+            self._attach_trailing_stop(signal.symbol, eff_qty, price, signal_id,
+                                       entry_ack=ack)
         return TickResult("ORDER_PLACED", str(ack.broker_order_id))
 
     def _order_kind(self, side, ref_price: float):
@@ -547,34 +548,36 @@ class TradeEngine:
             last_boid = ack.broker_order_id
         return TickResult("OVERLAY_PLACED", f"{plan.correlation_id}:{last_boid}")
 
-    def _confirm_hedge_fill(self, ack, req) -> bool:
-        """True iff the hedge option leg is confirmed FILLED. FILLED at ack
-        (paper) -> True immediately. Otherwise poll get_open_orders() up to
-        self._hedge_confirm_attempts times; a leg is confirmed once its
-        client_order_id is no longer among the working orders (async live fill).
-        REJECTED/UNKNOWN acks were already handled by the caller before this runs,
-        so a still-resting SUBMITTED after the window returns False -> §2.B fallback.
-        Detection convention matches §3 escalation (client_order_id membership)."""
+    def _confirm_off_book(self, ack) -> bool:
+        """True iff ack's order is confirmed OFF the open-orders book (filled/
+        terminal). FILLED at ack (paper) -> True immediately; else bounded poll
+        with injected backoff sleep. None (query failed) never counts as off."""
         if ack.state is OrderState.FILLED:
             return True
-
-        def _resting() -> "Optional[bool]":
-            return self._order_working(ack)
-
-        first = _resting()
+        first = self._order_working(ack)
         if first is False:
             return True   # already off the book (terminal/filled) at first look
         for attempt in range(1, self._hedge_confirm_attempts + 1):
             self._hedge_confirm_sleep(backoff_seconds(attempt))
-            state = _resting()
+            state = self._order_working(ack)
             if state is False:
                 return True
             if state is None:
-                logger.warning("hedge %s: open-orders query failed on fill-poll "
-                               "attempt %d — cannot confirm", req.symbol, attempt)
-        logger.warning("hedge %s still resting after %d fill-poll attempts (%s)",
-                       req.symbol, self._hedge_confirm_attempts, ack.state.value)
+                logger.warning("fill-confirm: open-orders query failed on "
+                               "attempt %d — cannot confirm", attempt)
         return False
+
+    def _confirm_hedge_fill(self, ack, req) -> bool:
+        """True iff the hedge option leg is confirmed FILLED. Thin wrapper over
+        _confirm_off_book — REJECTED/UNKNOWN acks were already handled by the
+        caller before this runs, so a still-resting SUBMITTED after the window
+        returns False -> §2.B fallback. Detection convention matches §3
+        escalation (client_order_id membership)."""
+        confirmed = self._confirm_off_book(ack)
+        if not confirmed:
+            logger.warning("hedge %s still resting after %d fill-poll attempts (%s)",
+                           req.symbol, self._hedge_confirm_attempts, ack.state.value)
+        return confirmed
 
     def _handle_unhedged_stock(self, plan, stock_req, ref_price, signal_id,
                                hedge_confirmed, hedge_states) -> None:
@@ -620,11 +623,13 @@ class TradeEngine:
                              tag: str) -> bool:
         """Public audited stop-attach (StopManager's morning re-attach). Same
         path as entry-time attachment: risk core -> router -> DB. `tag` seeds
-        the client_order_id, so one (tag, symbol, qty) attaches at most once."""
-        return self._attach_trailing_stop(symbol, qty, ref_price, tag)
+        the client_order_id, so one (tag, symbol, qty) attaches at most once.
+        entry_ack stays None here — the position already exists (reconciled),
+        so there is nothing to confirm off the book."""
+        return self._attach_trailing_stop(symbol, qty, ref_price, tag, entry_ack=None)
 
     def _attach_trailing_stop(self, symbol: str, qty: int, ref_price: float,
-                              entry_signal_id: str) -> bool:
+                              entry_signal_id: str, entry_ack=None) -> bool:
         """Place a broker-resting TRAILING_STOP SELL for `qty` shares through the
         SAME audited risk path. Idempotent: the client_order_id is derived from
         the entry's signal id, so re-attaching for the same entry dedupes at the
@@ -632,14 +637,15 @@ class TradeEngine:
         consolidation on qty changes (pyramiding) is Phase 3. Returns True iff
         the stop was actually placed (risk-approved and submitted).
 
-        LIVE NOTE (fail-safe): against SimBroker the BUY auto-fills, so the
-        re-fetched snapshot reflects the new position and the stop attaches. On
-        live OpenD a MARKET BUY returns SUBMITTED (async fill), so this snapshot
-        may still show the pre-entry position; the risk core then rejects the
-        stop as long-only (resulting < 0) and it simply does not attach this tick
-        — the entry is left unprotected but NEVER mis-directed (no short can
-        open). Attaching off a reconciled fill is a Phase 3 follow-up."""
-        snap = self._b.get_account()  # SimBroker: reflects the just-filled position (see LIVE NOTE)
+        C2 fix: on live a MARKET BUY acks SUBMITTED and fills async. Attach
+        only after the entry is confirmed off the book, so the re-fetched
+        snapshot reflects the position and the risk core approves the stop."""
+        if entry_ack is not None and not self._confirm_off_book(entry_ack):
+            logger.warning("trailing stop for %s NOT attached — entry %s not "
+                           "confirmed filled (intraday stop reconcile is the "
+                           "backstop)", symbol, entry_ack.client_order_id)
+            return False
+        snap = self._b.get_account()  # confirmed filled (or paper auto-fill) -> reflects the position
         cid = OrderRouter.make_client_order_id(symbol, "SELL", qty, f"{entry_signal_id}-stop")
         req = OrderRequest(symbol=symbol, side="SELL", qty=qty, order_type="TRAILING_STOP",
                            limit_price=None, client_order_id=cid,
