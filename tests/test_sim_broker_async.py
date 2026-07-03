@@ -72,12 +72,13 @@ def test_cancel_all_purges_pending_async_state():
 
 def test_async_marketable_limit_fills_at_limit_price():
     # Verify marketable LIMIT orders route through async path and fill at limit_price.
-    # With spread_bps=100 (1%), ref=100: bid=99.5, ask=100.5.
-    # A BUY limit at 100.5 is marketable (>= ask).
+    # With spread_bps=100 (1%), ref=100: bid=99.0, ask=101.0.
+    # Set limit_price = ask + 1.0 to diverge from market fill price.
+    # If code regressed to _market_fill_price, it would fill at 101.0 instead of 102.0.
     b = SimBroker({"US.TEST": 100.0}, fill_latency_ticks=2, spread_bps=100.0)
     bid, ask = b.get_touch("US.TEST")
     assert bid < 100.0 < ask  # verify spread is present
-    limit_price = ask  # exactly at the ask, definitely marketable
+    limit_price = ask + 1.0  # strictly above ask to diverge from market fill price
     req = OrderRequest(symbol="US.TEST", side="BUY", qty=10,
                        order_type="LIMIT", limit_price=limit_price,
                        client_order_id="limit1")
@@ -92,7 +93,7 @@ def test_async_marketable_limit_fills_at_limit_price():
     # Verify it filled at the limit price, not at the market ask
     fills = b.reconcile_fills(None)
     assert len(fills) == 1
-    assert fills[0].price == limit_price
+    assert fills[0].price == limit_price  # must be ask + 1.0, not ask
     assert fills[0].qty == 10
     assert b.get_account().position_qty("US.TEST") == 10
     expected_cash = initial_cash - (10 * limit_price)
