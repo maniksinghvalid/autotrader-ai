@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import logging.handlers
 from dataclasses import dataclass
+from dataclasses import replace as _dc_replace
 from datetime import date
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
@@ -819,6 +820,17 @@ class TradeEngine:
             return "STALE_TARGETS"
 
         snap = self._b.get_account()
+        # Book segregation (spec D2/D4): claimed (breakout-owned) symbols are
+        # invisible to the rebalancer — never a top-up target, never trimmed.
+        # compute_plan stays unchanged; we filter its inputs. The hard gross cap
+        # is still enforced per-order in submit_rebalance_order (fresh account),
+        # so hiding these positions here does not relax the gross limit.
+        claimed = self._db.get_claims()
+        if claimed:
+            scores = {s: v for s, v in scores.items() if s not in claimed}
+            snap = _dc_replace(
+                snap, positions=tuple(p for p in snap.positions
+                                      if p.symbol not in claimed))
         prices = {}
         for sym in scores:
             q = self._b.get_quote(sym)
