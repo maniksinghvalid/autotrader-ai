@@ -948,11 +948,21 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
     lookback = int(os.getenv("ENTRY_BREAKOUT_LOOKBACK", "20"))
     strategy_enabled = os.getenv("STRATEGY_ENABLED", "true").strip().lower() in (
         "1", "true", "yes", "on")
+    # Strategy exit params are env-driven (CLAUDE.md: no hardcoded risk values
+    # outside config); defaults match the prior hardcoded values so behavior
+    # is unchanged unless an operator explicitly overrides (V9).
     strat = BreakoutStrategy(BreakoutParams(
-        symbol=symbol, stop_loss_pct=0.05, take_profit_pct=0.10, confidence=0.7))
+        symbol=symbol,
+        stop_loss_pct=float(os.getenv("STRATEGY_STOP_LOSS_PCT", "0.05")),
+        take_profit_pct=float(os.getenv("STRATEGY_TAKE_PROFIT_PCT", "0.10")),
+        confidence=float(os.getenv("STRATEGY_CONFIDENCE", "0.7"))))
     logger.info("internal strategy: BREAKOUT symbol=%s lookback=%d enabled=%s",
                 symbol, lookback, strategy_enabled)
-    audit = os.path.join(os.path.expanduser("~"), ".futu_trade_audit.jsonl")
+    # New default audit path (V9/V11): distinct from the vendored skills'/SNP
+    # bot's ~/.futu_trade_audit.jsonl, so the two audit trails never collide
+    # on a shared paper account. The old file is left in place for the skills.
+    audit = os.path.expanduser(
+        os.getenv("AUTOTRADER_AUDIT_PATH", "~/.autotrader_trade_audit.jsonl"))
     broker = MoomooBroker()
     broker.connect()
     breakout_ref = BreakoutReference(broker, lookback)
@@ -983,15 +993,23 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
         reconcile=lambda: ground_truth_sync(broker, db, owned_only=owned_only),
         sleep=time.sleep,
     )
+    from autotrader.config import holiday_horizon_warning
+    holiday_warning = holiday_horizon_warning(cfg.market_holidays, date.today())
+    if holiday_warning is not None:
+        logger.warning(holiday_warning)
+
     inbox = None
     inbox_dir = os.getenv("AUTOTRADER_SIGNAL_INBOX")
-    if inbox_dir:
+    if inbox_dir and cfg.signals_enabled:
         from autotrader.signals.inbox import SignalInbox
         inbox = SignalInbox(os.path.expanduser(inbox_dir),
                             on_targets=db.upsert_target_weights,
                             seen_get=db.get_state, seen_set=db.set_state,
                             ttl_hours=float(os.getenv("AUTOTRADER_SIGNAL_TTL_HOURS", "24")))
         logger.info("external-signal inbox at %s", inbox_dir)
+    elif inbox_dir and not cfg.signals_enabled:
+        logger.info("external signals DISABLED (stage gating) — "
+                    "AUTOTRADER_SIGNAL_INBOX=%s ignored", inbox_dir)
     reporter = None
     if slack_url:
         from autotrader.reporting.eod_reporter import EODReporter

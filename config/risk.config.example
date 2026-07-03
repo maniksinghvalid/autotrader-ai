@@ -65,3 +65,76 @@ RISK_OPTION_DTE_MIN=30
 RISK_OPTION_DTE_MAX=45
 RISK_OPTION_DTE_TO_CLOSE=7             # exit declaration (enforced in O4)
 RISK_OPTION_PROFIT_TARGET_PCT=0.5      # exit declaration (enforced in O4)
+
+# --- Trading calendar (spec W3) ---
+# Full-day NYSE market holidays (comma-separated ISO dates), added to the
+# weekend gate in market_calendar.is_trading_day. Shipped default covers 2026
+# AND 2027 (see autotrader/config.py:_DEFAULT_NYSE_HOLIDAYS). main() logs a
+# warning via holiday_horizon_warning() once the calendar is within 60 days
+# of running out — extend it well before then (V9). Not a risk limit, but
+# still config-only per CLAUDE.md (no hardcoded dates outside config).
+# RISK_MARKET_HOLIDAYS=2026-01-01,2026-01-19,...,2027-12-24
+
+# --- Protective limit orders (spec W-series; DEFAULT OFF; HUMAN-REVIEW) ---
+# When disabled the engine emits the exact MARKET orders it does today.
+# When enabled, entries/rebalance/option legs submit as capped marketable
+# limits: cap = max(order_cap_bps/1e4 * price, order_cap_ticks * tick).
+# Trailing-stop exits are unaffected. Risk-limit CHANGES require explicit
+# human review (CLAUDE.md).
+RISK_LIMIT_ORDERS_ENABLED=false
+RISK_ORDER_CAP_BPS=0                   # e.g. 25 = cap at 25bps through the touch
+RISK_ORDER_CAP_TICKS=0                 # alternative/additional tick-based cap
+# Dwell time (seconds) given to each escalation stage (initial capped LIMIT,
+# then the re-peg) before it is judged "resting" and escalation advances.
+RISK_ESCALATION_DWELL_SECONDS=20.0
+
+# Unrealized-drawdown ENTRY BLOCK (V4b). Positive dollars; 0 disables. On
+# breach only NEW entries are blocked — never a flatten (open positions exit
+# via their trailing stops). Risk-limit CHANGES require explicit human review.
+RISK_UNREALIZED_LOSS_GATE=0.0
+
+# --- Account sovereignty (V11: SNP-bot coexistence on a shared paper account) ---
+# SOLE = today's behavior (sweep/flatten/report the whole account). SHARED =
+# every account-wide operation scopes to AutoTrader's own tracked book.
+# LIVE+SHARED is structurally refused.
+RISK_ACCOUNT_OWNERSHIP=SOLE
+
+# --- Stage-model cutover switch (V9) ---
+# True (default) = external signals (webhook/file-drop inbox) are consumed.
+# The staged live cutover sets this to 0 at Stage 1 to disable external
+# signals while keeping the internal strategy + stops + halts live; main()
+# skips SignalInbox construction entirely and logs the disabled state.
+RISK_SIGNALS_ENABLED=true
+
+# --- Internal breakout strategy exit params (V9) ---
+# Env-driven per CLAUDE.md (no hardcoded risk values outside config).
+# Defaults below match the values that were previously hardcoded in main().
+# Risk-limit CHANGES require explicit human review (CLAUDE.md).
+STRATEGY_STOP_LOSS_PCT=0.05
+STRATEGY_TAKE_PROFIT_PCT=0.10
+STRATEGY_CONFIDENCE=0.7
+
+# --- AUTOTRADER_* operational knobs (non-secret; not RISK_* because they are
+# not risk limits, but still config-only per CLAUDE.md) ---
+# Trade-audit journal path (V9/V11). New default, distinct from the vendored
+# skills'/SNP bot's ~/.futu_trade_audit.jsonl, so the two audit trails never
+# collide on a shared paper account.
+# AUTOTRADER_AUDIT_PATH=~/.autotrader_trade_audit.jsonl
+# Freshness window (hours) for external-signal target-weight payloads before
+# they're treated as stale and dropped (Phase 2c).
+# AUTOTRADER_SIGNAL_TTL_HOURS=24
+# Shared secret for the webhook ingress (Phase 2c-W); paired with an
+# HMAC-SHA256 body signature. Lives in config/secure.config, not here.
+# AUTOTRADER_WEBHOOK_TOKEN=
+# Max age (minutes) accepted for a webhook-delivered signal before rejection.
+# AUTOTRADER_WEBHOOK_FRESHNESS_MIN=5
+# Dead-man's-switch heartbeat URL (V8c): pinged on a fixed cadence so an
+# externally-monitored, silently-wedged process is detectable. Off by default.
+# AUTOTRADER_HEARTBEAT_URL=
+# Iterations between heartbeat pings when AUTOTRADER_HEARTBEAT_URL is set.
+# AUTOTRADER_HEARTBEAT_EVERY=60
+# Directory for the optional rotating on-disk log (V8c), independent of
+# launchd's own StandardOutPath/StandardErrorPath redirection. Off by default.
+# AUTOTRADER_LOG_DIR=
+# Number of engine ticks a broker snapshot is cached for before refreshing.
+# AUTOTRADER_SNAPSHOT_CACHE_TICKS=6

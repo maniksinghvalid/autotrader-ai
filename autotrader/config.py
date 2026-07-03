@@ -7,13 +7,26 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import date
-from typing import FrozenSet
+from typing import FrozenSet, Optional
 
-# NYSE full-day holidays for 2026 — the shipped default for RISK_MARKET_HOLIDAYS.
-# Operators must extend this via config each year (tracked in PRE-LIVE.md).
-_DEFAULT_2026_NYSE_HOLIDAYS = ("2026-01-01,2026-01-19,2026-02-16,2026-04-03,"
-                               "2026-05-25,2026-06-19,2026-07-03,2026-09-07,"
-                               "2026-11-26,2026-12-25")
+# NYSE full-day holidays for 2026 and 2027 — the shipped default for
+# RISK_MARKET_HOLIDAYS. Operators must extend this via config each year
+# (tracked in PRE-LIVE.md); holiday_horizon_warning() below flags when the
+# calendar is about to run out so this doesn't silently degrade to "trades
+# on holidays" (V9).
+#
+# 2027 dates independently verified against the official NYSE holiday
+# calendar (New Year's Day, MLK Day, Presidents Day, Good Friday, Memorial
+# Day, Juneteenth, Independence Day, Labor Day, Thanksgiving, Christmas),
+# including Sat/Sun observance shifts: Juneteenth (Sat 6/19 -> observed
+# Fri 6/18), Independence Day (Sun 7/4 -> observed Mon 7/5), and Christmas
+# (Sat 12/25 -> observed Fri 12/24).
+_DEFAULT_NYSE_HOLIDAYS = ("2026-01-01,2026-01-19,2026-02-16,2026-04-03,"
+                          "2026-05-25,2026-06-19,2026-07-03,2026-09-07,"
+                          "2026-11-26,2026-12-25,"
+                          "2027-01-01,2027-01-18,2027-02-15,2027-03-26,"
+                          "2027-05-31,2027-06-18,2027-07-05,2027-09-06,"
+                          "2027-11-25,2027-12-24")
 
 
 @dataclass(frozen=True)
@@ -88,6 +101,11 @@ class RiskConfig:
     # AutoTrader's own tracked book (SNP-bot coexistence on the shared paper
     # account). LIVE+SHARED is structurally refused.
     account_ownership: str = "SOLE"
+    # Stage-model cutover switch (V9): True = external signals (webhook/inbox)
+    # are consumed. Stage 1 of the live cutover sets this False to disable
+    # external signals while keeping the internal strategy + stops + halts
+    # live; main() skips SignalInbox construction entirely when False.
+    signals_enabled: bool = True
 
 
 def _f(name: str, default: float) -> float:
@@ -129,7 +147,7 @@ def load_risk_config() -> RiskConfig:
         raise ValueError(
             "RISK_LIMIT_ORDERS_ENABLED=1 requires RISK_ORDER_CAP_BPS or "
             "RISK_ORDER_CAP_TICKS > 0 — zero caps degenerate to at-touch limits")
-    raw_holidays = os.getenv("RISK_MARKET_HOLIDAYS", _DEFAULT_2026_NYSE_HOLIDAYS)
+    raw_holidays = os.getenv("RISK_MARKET_HOLIDAYS", _DEFAULT_NYSE_HOLIDAYS)
     try:
         holidays = frozenset(date.fromisoformat(s.strip())
                              for s in raw_holidays.split(",") if s.strip())
@@ -176,4 +194,18 @@ def load_risk_config() -> RiskConfig:
         escalation_dwell_seconds=_f("RISK_ESCALATION_DWELL_SECONDS", 20.0),
         market_holidays=holidays,
         account_ownership=ownership,
+        signals_enabled=_b("RISK_SIGNALS_ENABLED", True),
     )
+
+
+def holiday_horizon_warning(holidays: FrozenSet[date], today: date,
+                            days: int = 60) -> Optional[str]:
+    """Warn when the configured holiday calendar is about to run out — the
+    silent failure mode is 'trades on holidays' (V9)."""
+    if not holidays:
+        return "RISK_MARKET_HOLIDAYS is EMPTY — holiday gating is off"
+    horizon = (max(holidays) - today).days
+    if horizon < days:
+        return (f"RISK_MARKET_HOLIDAYS ends {max(holidays).isoformat()} "
+                f"({horizon}d away) — extend the calendar before it expires")
+    return None
