@@ -335,21 +335,31 @@ class TradeEngine:
         return ack.client_order_id in {o.client_order_id for o in open_orders}
 
     def _cancel_for_escalation(self, ack) -> bool:
-        """Cancel ack's resting order; True only when the cancel SUCCEEDED and
-        the next escalation stage may submit. A cancel failure usually means
-        'already filled' — submitting the next stage then would DOUBLE-FILL
-        (review Important #3), so the caller must stop escalating instead. The
-        abandoned resting/filled order is cleaned up by the EOD cancel-all and
-        the morning stop reconcile."""
+        """Request the cancel, then CONFIRM the order actually left the book
+        before allowing the next stage (V5a): RET_OK acks the REQUEST — an
+        in-flight fill between request and effect would double-fill if the
+        next stage submitted immediately. Bounded confirm poll; unknown book
+        or still-working => False (stop escalating; EOD/reconcile cleans up)."""
         if not ack.broker_order_id:
             return False
         try:
             self._b.cancel_order(ack.broker_order_id)
-            return True
         except BrokerError as e:
             logger.warning("escalation: cancel %s failed (%s) — NOT advancing",
                            ack.broker_order_id, e)
             return False
+        for attempt in range(1, 4):
+            self._escalation_sleep(backoff_seconds(attempt))
+            working = self._order_working(ack)
+            if working is False:
+                return True          # confirmed off the book
+            if working is None:
+                logger.warning("escalation: open-orders unknown while confirming "
+                               "cancel of %s — NOT advancing", ack.broker_order_id)
+                return False
+        logger.warning("escalation: %s still working after cancel request — "
+                       "NOT advancing", ack.broker_order_id)
+        return False
 
     def _submit_with_escalation(self, req: OrderRequest, snap, ref_price: float):
         """Submit a capped LIMIT; give it escalation_dwell_seconds to fill; if

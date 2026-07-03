@@ -156,7 +156,10 @@ def test_escalation_dwells_between_stages(tmp_path):
                       order_qty=10, audit_path=str(tmp_path / "audit.jsonl"),
                       escalation_sleep=slept.append)
     assert eng.tick().action == "ORDER_PLACED"
-    assert slept == [7.5, 7.5]          # stage-1 dwell + re-peg dwell before MARKET
+    # stage-1 dwell, then a cancel-confirm poll (V5a) before the re-peg dwell,
+    # then another cancel-confirm poll before MARKET. The synchronous SimBroker
+    # confirms off-book on the confirm poll's first attempt (backoff_seconds(1)).
+    assert slept == [7.5, 1.0, 7.5, 1.0]
 
 
 def test_failed_cancel_never_double_submits(tmp_path):
