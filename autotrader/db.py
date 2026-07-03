@@ -366,6 +366,13 @@ class DB:
                 (prefix + "%",)).fetchall()
         return rows
 
+    def owned_symbols(self) -> set:
+        """Symbols AutoTrader itself has ever traded (trades is written only by
+        our order path) — the ownership registry for SHARED-mode scoping (V11)."""
+        with self._lock:
+            rows = self._conn.execute("SELECT DISTINCT symbol FROM trades").fetchall()
+        return {r[0] for r in rows}
+
     def open_trailing_stop_ids(self) -> List[str]:
         """broker_order_ids of ALL working TRAILING_STOP SELLs (state
         SUBMITTED/PARTIAL). Used by reconcile to detect stops swept at the broker."""

@@ -83,6 +83,11 @@ class RiskConfig:
     # weekend gate in market_calendar.is_trading_day. Not a risk limit — but
     # still config-only per CLAUDE.md (no hardcoded dates outside config).
     market_holidays: FrozenSet[date] = frozenset()
+    # V11: account sovereignty. SOLE = today's behavior (sweep/flatten/report
+    # the whole account). SHARED = every account-wide operation scopes to
+    # AutoTrader's own tracked book (SNP-bot coexistence on the shared paper
+    # account). LIVE+SHARED is structurally refused.
+    account_ownership: str = "SOLE"
 
 
 def _f(name: str, default: float) -> float:
@@ -130,6 +135,12 @@ def load_risk_config() -> RiskConfig:
                              for s in raw_holidays.split(",") if s.strip())
     except ValueError as e:
         raise ValueError(f"RISK_MARKET_HOLIDAYS contains an invalid ISO date: {e}")
+    ownership = os.getenv("RISK_ACCOUNT_OWNERSHIP", "SOLE").strip().upper()
+    if ownership not in ("SOLE", "SHARED"):
+        raise ValueError(f"RISK_ACCOUNT_OWNERSHIP must be SOLE or SHARED, got {ownership!r}")
+    if env == "LIVE" and ownership == "SHARED":
+        raise ValueError("RISK_TRADING_ENV=LIVE requires RISK_ACCOUNT_OWNERSHIP=SOLE, got "
+                         "SHARED — live money never runs with scoped-down safety sweeps")
     return RiskConfig(
         trading_env=env,
         min_confidence=_f("RISK_MIN_CONFIDENCE", 0.6),
@@ -164,4 +175,5 @@ def load_risk_config() -> RiskConfig:
         order_cap_ticks=order_cap_ticks,
         escalation_dwell_seconds=_f("RISK_ESCALATION_DWELL_SECONDS", 20.0),
         market_holidays=holidays,
+        account_ownership=ownership,
     )

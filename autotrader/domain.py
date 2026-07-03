@@ -163,6 +163,7 @@ class Fill:
     qty: float
     price: float
     ts: str
+    client_order_id: Optional[str] = None
 
 
 @dataclass(frozen=True)

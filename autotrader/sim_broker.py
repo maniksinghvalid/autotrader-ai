@@ -160,7 +160,8 @@ class SimBroker(Broker):
         fill_id = f"fill-{seq}"
         ts = f"t{seq}"
         self._fills.append(Fill(fill_id=fill_id, symbol=req.symbol,
-                                side=req.side, qty=req.qty, price=price, ts=ts))
+                                side=req.side, qty=req.qty, price=price, ts=ts,
+                                client_order_id=req.client_order_id))
 
     def cancel_all(self) -> None:
         self._open.clear()

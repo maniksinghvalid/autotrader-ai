@@ -438,6 +438,7 @@ class MoomooBroker(Broker):
         for i in range(len(data)):
             row = data.iloc[i]
             side_raw = self._c.format_enum(self._c.safe_get(row, "trd_side", default="BUY")).upper()
+            remark = str(self._c.safe_get(row, "remark", default=""))
             out.append(Fill(
                 fill_id=str(self._c.safe_get(row, "deal_id", default="")),
                 symbol=str(self._c.safe_get(row, "code", default="")),
@@ -445,6 +446,7 @@ class MoomooBroker(Broker):
                 qty=self._c.safe_float(self._c.safe_get(row, "qty", default=0)),
                 price=self._c.safe_float(self._c.safe_get(row, "price", default=0)),
                 ts=str(self._c.safe_get(row, "create_time", default="")),
+                client_order_id=remark or None,
             ))
         return out
 
@@ -478,6 +480,7 @@ class MoomooBroker(Broker):
             if not order_id:
                 continue
             side_raw = self._c.format_enum(self._c.safe_get(row, "trd_side", default="BUY")).upper()
+            remark = str(self._c.safe_get(row, "remark", default=""))
             out.append(Fill(
                 fill_id=f"paper-{order_id}",
                 symbol=str(self._c.safe_get(row, "code", default="")),
@@ -485,5 +488,6 @@ class MoomooBroker(Broker):
                 qty=dealt_qty,
                 price=self._c.safe_float(self._c.safe_get(row, "dealt_avg_price", default=0)),
                 ts=str(self._c.safe_get(row, "updated_time", "create_time", default="")),
+                client_order_id=remark or None,
             ))
         return out
