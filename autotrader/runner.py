@@ -34,7 +34,9 @@ class SessionRunner:
                  sleep: Callable[[float], None], loop_interval: float = 5.0,
                  signal_inbox=None, reporter=None, stop_manager=None,
                  trading_day_fn: Optional[Callable[[_date], bool]] = None,
-                 alerts=None, owned_only: bool = False):
+                 alerts=None, owned_only: bool = False,
+                 heartbeat: Optional[Callable[[], None]] = None,
+                 heartbeat_every: int = 60):
         self._engine = engine
         self._broker = broker
         self._db = db
@@ -49,6 +51,12 @@ class SessionRunner:
         self._stop_manager = stop_manager
         self._trading_day_fn = trading_day_fn
         self._alerts = alerts
+        # V8c: dead-man's-switch heartbeat — an external monitor (e.g. a cron-hit
+        # URL / healthchecks.io) that fires every heartbeat_every iterations so an
+        # outside watcher can detect a silently-wedged process. Never allowed to
+        # kill the loop (see run()).
+        self._heartbeat = heartbeat
+        self._heartbeat_every = heartbeat_every
         # V11/C6: SHARED-mode scoping — fills/positions ingestion is restricted
         # to AutoTrader's own tracked book (see lifecycle.ground_truth_sync).
         self._owned_only = owned_only
@@ -209,6 +217,7 @@ class SessionRunner:
     def run(self, stop: Callable[[], bool]) -> None:
         logger.info("SessionRunner started (loop_interval=%.1fs)", self._loop_interval)
         errors = 0
+        it = 0
         while not stop():
             try:
                 action = self.run_once(self._clock.now_est())
@@ -223,5 +232,11 @@ class SessionRunner:
                     self._alerts.send(
                         f"⚠ TRADER DEGRADED — {errors} consecutive loop errors; "
                         f"latest: {e}", key="loop-errors")
+            it += 1
+            if self._heartbeat is not None and (it - 1) % self._heartbeat_every == 0:
+                try:
+                    self._heartbeat()
+                except Exception as e:    # dead-man ping must never kill the loop
+                    logger.warning("heartbeat failed: %s", e)
             self._sleep(self._loop_interval)
         logger.info("SessionRunner stopped")

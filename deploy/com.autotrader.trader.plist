@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  AutoTrader — continuous trading loop (SessionRunner via `autotrader.main`).
+
+  launchd cannot `source` a shell config file directly, so ProgramArguments
+  wraps the invocation in a login zsh that sources the two gitignored config
+  files (config/risk.config, config/secure.config — RISK_* limits, FUTU_*
+  connection, AUTOTRADER_SLACK_WEBHOOK_URL, etc.) with `set -a`/`set +a` so the
+  sourced KEY=VALUE lines are actually exported into the child `uv run`
+  process's environment (a bare `source` only sets shell-local variables).
+
+  Label is `com.autotrader.*` — the separate SNP trading bot process on this
+  Mac owns `com.bot.trading`; do not reuse or collide with that label.
+
+  See deploy/README.md for install / verify / uninstall instructions.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.autotrader.trader</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-lc</string>
+        <string>set -a &amp;&amp; source config/risk.config &amp;&amp; set +a &amp;&amp; set -a &amp;&amp; source config/secure.config &amp;&amp; set +a &amp;&amp; exec /opt/homebrew/bin/uv run python -m autotrader.main</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/acdc/Documents/AI/AutoTrader</string>
+
+    <!-- Non-secret, non-risk operational knobs only. Secrets and RISK_* limits
+         come from the sourced config files above, never from here. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>AUTOTRADER_LOG_DIR</key>
+        <string>/Users/acdc/Library/Logs/autotrader</string>
+        <key>AUTOTRADER_HEARTBEAT_EVERY</key>
+        <string>60</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/acdc/Library/Logs/autotrader/trader.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/acdc/Library/Logs/autotrader/trader.stderr.log</string>
+</dict>
+</plist>

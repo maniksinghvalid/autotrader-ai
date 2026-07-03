@@ -913,6 +913,19 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
     import sys
     import time
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    # V8c: optional rotating file handler alongside stdout, so launchd-supervised
+    # runs (which redirect stdout/stderr to StandardOutPath/StandardErrorPath)
+    # also get a bounded, rotated on-disk log independent of launchd's own
+    # redirection. Off by default — only added when AUTOTRADER_LOG_DIR is set.
+    log_dir = os.getenv("AUTOTRADER_LOG_DIR")
+    if log_dir:
+        import logging.handlers
+        os.makedirs(os.path.expanduser(log_dir), exist_ok=True)
+        fh = logging.handlers.RotatingFileHandler(
+            os.path.join(os.path.expanduser(log_dir), "trader.log"),
+            maxBytes=10_000_000, backupCount=5)
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        logging.getLogger().addHandler(fh)
     cfg = load_risk_config()
     logger.info("TRADING_ENV=%s (paper-only v1)", cfg.trading_env)
     if cfg.trading_env != "PAPER":
@@ -998,6 +1011,22 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
     stop_manager = StopManager(engine, broker, db, cfg, alert_fn=stop_alert)
 
     from autotrader.market_calendar import is_trading_day
+
+    # V8c: dead-man's-switch heartbeat — an external monitor (uptime pinger,
+    # healthchecks.io, etc.) hit on a fixed cadence so a silently-wedged process
+    # (loop alive but stuck) is detectable from outside the machine. Off by
+    # default; wired only when AUTOTRADER_HEARTBEAT_URL is set. A failed ping
+    # never raises past the runner's own try/except (see SessionRunner.run()).
+    hb_url = os.getenv("AUTOTRADER_HEARTBEAT_URL")
+    heartbeat = None
+    if hb_url:
+        import urllib.request
+
+        def heartbeat():
+            urllib.request.urlopen(hb_url, timeout=5)
+        logger.info("heartbeat enabled -> %s (every %s iterations)",
+                    hb_url, os.getenv("AUTOTRADER_HEARTBEAT_EVERY", "60"))
+
     runner = SessionRunner(
         engine=engine, broker=broker, db=db, gate=gate,
         scheduler=LifecycleScheduler(state_get=db.get_state, state_set=db.set_state),
@@ -1010,6 +1039,8 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
         trading_day_fn=lambda d: is_trading_day(d, cfg.market_holidays),
         owned_only=owned_only,
         alerts=alerts,
+        heartbeat=heartbeat,
+        heartbeat_every=int(os.getenv("AUTOTRADER_HEARTBEAT_EVERY", "60")),
     )
 
     stopped = {"flag": False}

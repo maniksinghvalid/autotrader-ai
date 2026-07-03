@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  AutoTrader — webhook signal ingress (Phase 2c-W, `autotrader.signals.webhook`).
+
+  Localhost-only, authenticated (shared secret + HMAC-SHA256), enqueue-only
+  process: it imports no Moomoo SDK and holds no broker handle (CLAUDE.md
+  hard rule — order execution is never exposed to the internet). It only
+  writes validated payloads into the file-drop inbox the trader polls.
+
+  Same sourcing wrapper pattern as com.autotrader.trader.plist — see that
+  file's header comment for why `set -a`/`set +a` is required.
+
+  Label is `com.autotrader.*` — the separate SNP trading bot process on this
+  Mac owns `com.bot.trading`; do not reuse or collide with that label.
+
+  See deploy/README.md for install / verify / uninstall instructions.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.autotrader.webhook</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-lc</string>
+        <string>set -a &amp;&amp; source config/risk.config &amp;&amp; set +a &amp;&amp; set -a &amp;&amp; source config/secure.config &amp;&amp; set +a &amp;&amp; exec /opt/homebrew/bin/uv run python -m autotrader.signals.webhook</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/acdc/Documents/AI/AutoTrader</string>
+
+    <!-- Non-secret operational knobs only. AUTOTRADER_WEBHOOK_SECRET,
+         AUTOTRADER_SIGNAL_INBOX, host/port etc. come from the sourced config
+         files above (config/secure.config), never from here. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>AUTOTRADER_LOG_DIR</key>
+        <string>/Users/acdc/Library/Logs/autotrader</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/acdc/Library/Logs/autotrader/webhook.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/acdc/Library/Logs/autotrader/webhook.stderr.log</string>
+</dict>
+</plist>

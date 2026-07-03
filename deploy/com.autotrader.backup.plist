@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  AutoTrader — nightly backup of the SQLite projection + trade audit journal.
+
+  Calendar-triggered (17:30 local, after the 16:30 ET EOD_REPORT job and the
+  16:15 ET EOD_CANCEL_ORDERS commit) — NOT KeepAlive/RunAtLoad: this is a
+  one-shot job that should run once at the scheduled time and exit, not be
+  respawned by launchd the instant it exits.
+
+  Label is `com.autotrader.*` — the separate SNP trading bot process on this
+  Mac owns `com.bot.trading`; do not reuse or collide with that label.
+
+  See deploy/README.md for install / verify / uninstall instructions.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.autotrader.backup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-lc</string>
+        <string>deploy/backup_autotrader.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/acdc/Documents/AI/AutoTrader</string>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>17</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/acdc/Library/Logs/autotrader/backup.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/acdc/Library/Logs/autotrader/backup.stderr.log</string>
+</dict>
+</plist>
