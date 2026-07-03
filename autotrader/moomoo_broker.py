@@ -321,7 +321,11 @@ class MoomooBroker(Broker):
             row = data.iloc[i]
             status = self._c.format_enum(self._c.safe_get(row, "order_status", default="")).upper()
             state = _STATUS_MAP.get(status, OrderState.UNKNOWN)
-            if state in (OrderState.PENDING, OrderState.SUBMITTED, OrderState.PARTIAL):
+            # V5b: PENDING/SUBMITTED/PARTIAL are working; an UNMAPPED status is
+            # unknown and must be treated as working too — dropping it makes a
+            # hedge look filled and lets escalation double-submit.
+            if state in (OrderState.PENDING, OrderState.SUBMITTED,
+                         OrderState.PARTIAL, OrderState.UNKNOWN):
                 out.append(OrderAck(
                     str(self._c.safe_get(row, "remark", default="")),
                     str(self._c.safe_get(row, "order_id", default="")), state, {}))

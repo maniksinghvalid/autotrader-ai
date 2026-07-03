@@ -117,6 +117,13 @@ def load_risk_config() -> RiskConfig:
         raise ValueError(
             f"RISK_DAILY_LOSS_HALT ({daily_loss_halt}) must exceed "
             f"RISK_DAILY_LOSS_LIMIT ({daily_loss_limit})")
+    limit_orders_enabled = _b("RISK_LIMIT_ORDERS_ENABLED", False)
+    order_cap_bps = _f("RISK_ORDER_CAP_BPS", 0.0)
+    order_cap_ticks = _f("RISK_ORDER_CAP_TICKS", 0.0)
+    if limit_orders_enabled and order_cap_bps <= 0 and order_cap_ticks <= 0:
+        raise ValueError(
+            "RISK_LIMIT_ORDERS_ENABLED=1 requires RISK_ORDER_CAP_BPS or "
+            "RISK_ORDER_CAP_TICKS > 0 — zero caps degenerate to at-touch limits")
     raw_holidays = os.getenv("RISK_MARKET_HOLIDAYS", _DEFAULT_2026_NYSE_HOLIDAYS)
     try:
         holidays = frozenset(date.fromisoformat(s.strip())
@@ -152,9 +159,9 @@ def load_risk_config() -> RiskConfig:
         option_profit_target_pct=_f("RISK_OPTION_PROFIT_TARGET_PCT", 0.5),
         option_default_contracts=int(_f("RISK_OPTION_DEFAULT_CONTRACTS", 1)),
         option_max_risk_pct=_f("RISK_OPTION_MAX_RISK_PCT", 0.02),
-        limit_orders_enabled=_b("RISK_LIMIT_ORDERS_ENABLED", False),
-        order_cap_bps=_f("RISK_ORDER_CAP_BPS", 0.0),
-        order_cap_ticks=_f("RISK_ORDER_CAP_TICKS", 0.0),
+        limit_orders_enabled=limit_orders_enabled,
+        order_cap_bps=order_cap_bps,
+        order_cap_ticks=order_cap_ticks,
         escalation_dwell_seconds=_f("RISK_ESCALATION_DWELL_SECONDS", 20.0),
         market_holidays=holidays,
     )

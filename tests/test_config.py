@@ -108,3 +108,20 @@ def test_unrealized_loss_gate_defaults_disabled(monkeypatch):
 def test_unrealized_loss_gate_from_env(monkeypatch):
     monkeypatch.setenv("RISK_UNREALIZED_LOSS_GATE", "250")
     assert load_risk_config().unrealized_loss_gate == 250.0
+
+
+def test_limit_orders_enabled_requires_a_cap(monkeypatch):
+    monkeypatch.setenv("RISK_LIMIT_ORDERS_ENABLED", "1")
+    monkeypatch.setenv("RISK_ORDER_CAP_BPS", "0")
+    monkeypatch.setenv("RISK_ORDER_CAP_TICKS", "0")
+    from autotrader.config import load_risk_config
+    with pytest.raises(ValueError, match="RISK_ORDER_CAP"):
+        load_risk_config()
+
+
+def test_limit_orders_enabled_with_bps_cap_ok(monkeypatch):
+    monkeypatch.setenv("RISK_LIMIT_ORDERS_ENABLED", "1")
+    monkeypatch.setenv("RISK_ORDER_CAP_BPS", "10")
+    monkeypatch.setenv("RISK_ORDER_CAP_TICKS", "0")
+    from autotrader.config import load_risk_config
+    assert load_risk_config().limit_orders_enabled
