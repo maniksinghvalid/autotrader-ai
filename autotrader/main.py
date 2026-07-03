@@ -312,6 +312,15 @@ class TradeEngine:
             logger.warning("risk core rejected: %s", decision.reason)
             return TickResult("REJECTED_BY_RISK", decision.reason)
 
+        # Book segregation (spec D2/D4): a BREAKOUT entry claims the symbol BEFORE
+        # the order is submitted. Fail-closed — if the claim write raises, the
+        # order is never sent (a claim on a phantom position only costs a skipped
+        # rebalance; a real position with no claim is the commingling bug).
+        if origin == books.ORIGIN_BREAKOUT and signal.direction == "BUY" \
+                and self._db is not None:
+            self._db.claim_symbol(signal.symbol, books.ORIGIN_BREAKOUT,
+                                  self._session_id)
+
         ack, term = self._submit_with_escalation(req, snap, price)
         if self._db:
             self._db.record_trade(
@@ -329,6 +338,12 @@ class TradeEngine:
         if signal.direction == "BUY" and self._cfg.trailing_stop_pct > 0:
             self._attach_trailing_stop(signal.symbol, eff_qty, price, signal_id,
                                        entry_ack=ack)
+        # Book segregation: a BREAKOUT exit that is CONFIRMED filled releases the
+        # claim inline. Non-immediate (live) exits release via reconcile_claims()
+        # after the next ground-truth sync (Task 6) — this is best-effort only.
+        if origin == books.ORIGIN_BREAKOUT and signal.direction == "SELL" \
+                and ack.state is OrderState.FILLED and self._db is not None:
+            self._db.release_claim(signal.symbol)
         return TickResult("ORDER_PLACED", str(ack.broker_order_id))
 
     def _order_kind(self, side, ref_price: float):
