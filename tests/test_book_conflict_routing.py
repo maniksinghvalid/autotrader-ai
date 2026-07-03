@@ -1,16 +1,12 @@
 """External signals (plain + overlay) are skipped on breakout-claimed symbols;
 internal breakout routing is unaffected."""
-from datetime import datetime, timezone
-
 from autotrader.config import RiskConfig
 from autotrader.db import DB
-from autotrader.domain import Signal
+from autotrader.domain import OverlayType, Signal
 from autotrader.lifecycle import EntryGate
 from autotrader.main import TradeEngine
 from autotrader.sim_broker import SimBroker
 from autotrader.strategies.threshold import StrategyParams, ThresholdStrategy
-
-NOW = datetime(2026, 7, 3, 17, 0, tzinfo=timezone.utc)
 
 
 def _cfg(**kw):
@@ -36,6 +32,16 @@ def test_external_buy_skipped_when_symbol_breakout_claimed(tmp_path):
     eng, db = _engine(tmp_path, broker, _cfg())
     db.claim_symbol("US.NIO", "BREAKOUT", "sess-x")
     res = eng.submit_external_signal(Signal("US.NIO", "BUY", 0.9, "ext"))
+    assert res.action == "BOOK_CONFLICT"
+    db.close()
+
+
+def test_external_overlay_skipped_when_symbol_breakout_claimed(tmp_path):
+    broker = SimBroker({"US.NIO": 5.0})
+    eng, db = _engine(tmp_path, broker, _cfg())
+    db.claim_symbol("US.NIO", "BREAKOUT", "sess-x")
+    res = eng.submit_external_signal(
+        Signal("US.NIO", "SELL", 0.9, "ext", overlay=OverlayType.COVERED_CALL))
     assert res.action == "BOOK_CONFLICT"
     db.close()
 
