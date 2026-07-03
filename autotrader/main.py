@@ -831,6 +831,7 @@ class TradeEngine:
                 self._gate.halt()
             if self._db:
                 self._db.record_halt(reason)
+                self._db.set_state(f"halt:{now.date().isoformat()}", reason)
             logger.error("RISK_CHECK HARD breach: flattened + halted (%s)", reason)
         return action.value
 
@@ -907,12 +908,13 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
     db = DB(db_path)
     logger.info("DB projection at %s", db_path)
     from autotrader.clock import Clock
-    from autotrader.lifecycle import EntryGate, ground_truth_sync
+    from autotrader.lifecycle import EntryGate, ground_truth_sync, restore_session_halt
     from autotrader.scheduler import LifecycleScheduler
     from autotrader.watchdog import Watchdog
     from autotrader.runner import SessionRunner
 
     gate = EntryGate(enabled=False)  # entries open at 09:45 via the scheduler
+    restore_session_halt(gate, db, date.today())  # V4c: halted day survives restart
     slack_url = os.getenv("AUTOTRADER_SLACK_WEBHOOK_URL")
     engine = build_engine(broker, strat, cfg,
                           order_qty=int(os.getenv("ORDER_QTY", "1")),

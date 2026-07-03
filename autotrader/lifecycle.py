@@ -100,3 +100,16 @@ class EntryGate:
     def halt(self) -> None:
         self._halted = True
         self._enabled = False
+
+
+def restore_session_halt(gate: EntryGate, db: DB, today) -> bool:
+    """V4c: a hard HALT survives a crash/restart. apply_risk_check persists
+    halt:<date>; restoring here means a restart on a halted day starts halted
+    (the date-scoped key auto-expires — the next session starts clean)."""
+    raw = db.get_state(f"halt:{today.isoformat()}")
+    if raw:
+        gate.halt()
+        logger.error("session halt RESTORED from state (%s) — trading stays "
+                     "halted for the day", raw)
+        return True
+    return False
