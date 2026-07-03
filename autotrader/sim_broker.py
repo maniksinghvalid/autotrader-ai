@@ -16,7 +16,8 @@ class SimBroker(Broker):
     def __init__(self, quotes: Dict[str, float], cash: float = 10000.0,
                  auto_fill: bool = True, option_chains=None,
                  spread_bps: float = 0.0, slippage_bps: float = 0.0,
-                 recent_highs: Optional[Dict[str, float]] = None):
+                 recent_highs: Optional[Dict[str, float]] = None,
+                 fill_latency_ticks: int = 0, cancel_latency_ticks: int = 0):
         self._quotes = dict(quotes)
         self._cash = cash
         self._positions: Dict[str, Position] = {}
@@ -36,6 +37,13 @@ class SimBroker(Broker):
         self.fail_open_orders = False
         self.fail_reconcile_fills = False
         self._recent_highs = dict(recent_highs or {})
+        # V1 async rig: 0 = synchronous (today's behavior). >0 = orders ack
+        # SUBMITTED and fill/cancel only after N tick_market() calls; within a
+        # tick, fills mature BEFORE cancels (the live cancel-race, deterministic).
+        self._fill_latency = int(fill_latency_ticks)
+        self._cancel_latency = int(cancel_latency_ticks)
+        self._pending_fills: Dict[str, dict] = {}    # boid -> {req, price, left}
+        self._pending_cancels: Dict[str, int] = {}   # boid -> ticks left
 
     def connect(self) -> None:
         return None
@@ -94,6 +102,13 @@ class SimBroker(Broker):
         else:  # MARKET
             rests = False
             price = self._market_fill_price(req.symbol, req.side)
+        if not rests and self._fill_latency > 0:
+            ack = OrderAck(req.client_order_id, boid, OrderState.SUBMITTED, {})
+            self._open[boid] = ack
+            self._pending_fills[boid] = {"req": req, "price": price,
+                                         "left": self._fill_latency}
+            self._acks_by_cid[req.client_order_id] = ack
+            return ack
         if not rests:
             signed = req.qty if req.side == "BUY" else -req.qty
             self._cash -= signed * price
@@ -111,7 +126,42 @@ class SimBroker(Broker):
         return ack
 
     def cancel_order(self, broker_order_id: str) -> None:
+        if broker_order_id not in self._open:
+            return
+        if self._cancel_latency > 0:
+            self._pending_cancels[broker_order_id] = self._cancel_latency
+            return
         self._open.pop(broker_order_id, None)
+        self._pending_fills.pop(broker_order_id, None)
+
+    def tick_market(self) -> None:
+        """Advance one sim tick: mature pending fills FIRST, then pending
+        cancels — a fill and cancel due the same tick resolves as a fill
+        (the live race a cancel-then-resubmit path must survive)."""
+        for boid in list(self._pending_fills):
+            entry = self._pending_fills[boid]
+            entry["left"] -= 1
+            if entry["left"] > 0:
+                continue
+            req, price = entry["req"], entry["price"]
+            signed = req.qty if req.side == "BUY" else -req.qty
+            self._cash -= signed * price
+            prev = self._positions.get(req.symbol)
+            new_qty = (prev.qty if prev else 0) + signed
+            self._positions[req.symbol] = Position(req.symbol, new_qty, price)
+            self._seq += 1
+            self._fills.append(Fill(fill_id=f"fill-{self._seq}", symbol=req.symbol,
+                                    side=req.side, qty=req.qty, price=price,
+                                    ts=f"t{self._seq}"))
+            del self._pending_fills[boid]
+            self._open.pop(boid, None)
+            self._pending_cancels.pop(boid, None)   # fill won the race
+        for boid in list(self._pending_cancels):
+            self._pending_cancels[boid] -= 1
+            if self._pending_cancels[boid] <= 0:
+                del self._pending_cancels[boid]
+                self._open.pop(boid, None)
+                self._pending_fills.pop(boid, None)
 
     def cancel_all(self) -> None:
         self._open.clear()
