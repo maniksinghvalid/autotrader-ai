@@ -944,7 +944,9 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
     if inbox_dir:
         from autotrader.signals.inbox import SignalInbox
         inbox = SignalInbox(os.path.expanduser(inbox_dir),
-                            on_targets=db.upsert_target_weights)
+                            on_targets=db.upsert_target_weights,
+                            seen_get=db.get_state, seen_set=db.set_state,
+                            ttl_hours=float(os.getenv("AUTOTRADER_SIGNAL_TTL_HOURS", "24")))
         logger.info("external-signal inbox at %s", inbox_dir)
     reporter = None
     if slack_url:

@@ -179,7 +179,7 @@ def test_cli_writes_one_valid_file_into_inbox(tmp_path, monkeypatch):
     files = list(inbox.glob("*.json"))
     assert len(files) == 1
     # the dropped file is consumable by the real inbox poller
-    sigs = SignalInbox(str(inbox)).poll()
+    sigs = SignalInbox(str(inbox), ttl_hours=0).poll()
     assert {s.symbol: s.direction for s in sigs} == {
         "US.DIVO": "BUY", "CA.VDY": "BUY", "US.YNVDA": "SELL"}
 

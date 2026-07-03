@@ -23,8 +23,12 @@ def _sig(secret: bytes, body: bytes) -> str:
     return "sha256=" + hmac.new(secret, body, hashlib.sha256).hexdigest()
 
 
-def _client(tmp_path, max_body=65536):
-    app = create_app(str(tmp_path / "inbox"), _SECRET, max_body=max_body)
+def _client(tmp_path, max_body=65536, freshness_minutes=0, now_fn=None):
+    # freshness_minutes=0 disables the C3 freshness window by default here: these
+    # tests use fixed historical timestamps and are not testing replay protection
+    # (that's covered by tests/test_replay_protection.py).
+    app = create_app(str(tmp_path / "inbox"), _SECRET, max_body=max_body,
+                     freshness_minutes=freshness_minutes, now_fn=now_fn)
     app.config.update(TESTING=True)
     return app.test_client(), tmp_path / "inbox"
 
@@ -105,7 +109,7 @@ def test_auth_audit_not_consumed_by_inbox(tmp_path):
     c, inbox_path = _client(tmp_path)
     c.post("/webhook/sweep", data=_BODY, content_type="application/json")  # 401 -> audit
     assert _audit_lines(inbox_path)                       # audit line written
-    assert SignalInbox(str(inbox_path)).poll() == []      # but the trader never consumes it
+    assert SignalInbox(str(inbox_path), ttl_hours=0).poll() == []      # but the trader never consumes it
 
 
 def test_valid_request_enqueues_and_returns_202(tmp_path):
@@ -163,7 +167,7 @@ def test_oversized_body_is_413(tmp_path):
 def test_enqueued_file_is_consumed_by_inbox_end_to_end(tmp_path):
     c, inbox_path = _client(tmp_path)
     c.post("/webhook/sweep", data=_BODY, headers=_headers())
-    sigs = SignalInbox(str(inbox_path)).poll()      # the trader's consumer
+    sigs = SignalInbox(str(inbox_path), ttl_hours=0).poll()      # the trader's consumer
     assert len(sigs) == 1
     assert sigs[0].symbol == "US.AAPL" and sigs[0].direction == "BUY"
 
@@ -188,7 +192,7 @@ def test_drifted_payload_is_coerced_enqueued_and_consumed(tmp_path):
     body = r.get_json()
     assert body["coerced"] is True and body["signals"] == 1   # unchanged XEQT dropped
     # enqueued file is canonical (re-validates) and the trader consumes it
-    sigs = SignalInbox(str(inbox_path)).poll()
+    sigs = SignalInbox(str(inbox_path), ttl_hours=0).poll()
     assert len(sigs) == 1
     assert sigs[0].symbol == "US.AAPL" and sigs[0].direction == "BUY"
 
@@ -204,9 +208,11 @@ def test_unsalvageable_payload_still_400s(tmp_path):
 
 
 def _client_v6a(tmp_path, secret=_SECRET, token=None, max_body=65536,
-                audit_max_bytes=10_000_000):
+                audit_max_bytes=10_000_000, freshness_minutes=0, now_fn=None):
+    # freshness_minutes=0 disables C3's freshness window by default (see _client).
     app = create_app(str(tmp_path / "inbox"), secret, max_body=max_body,
-                     token=token, audit_max_bytes=audit_max_bytes)
+                     token=token, audit_max_bytes=audit_max_bytes,
+                     freshness_minutes=freshness_minutes, now_fn=now_fn)
     app.config.update(TESTING=True)
     return app.test_client(), tmp_path / "inbox"
 

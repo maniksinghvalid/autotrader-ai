@@ -131,7 +131,7 @@ def test_run_once_routes_external_signal_from_inbox(tmp_path):
     (inbox_dir / "sig1.json").write_text(json.dumps(payload))
     # Quote 99 < entry 100 -> the STRATEGY emits NO_SIGNAL; only the external BUY acts.
     b = SimBroker(quotes={"US.AAPL": 99.0}, cash=100000.0)
-    runner, db, gate = _build(tmp_path, b, inbox=SignalInbox(str(inbox_dir)))
+    runner, db, gate = _build(tmp_path, b, inbox=SignalInbox(str(inbox_dir), ttl_hours=0))
     runner.run_once(_dt(9, 46))   # ENTRY_OPEN fires -> gate opens -> external BUY routes
     assert b.get_account().position_qty("US.AAPL") == 10
     db.close()
@@ -152,7 +152,7 @@ def test_pre_market_external_buy_is_deferred_then_placed_at_entry_open(tmp_path)
     (inbox_dir / "sig1.json").write_text(json.dumps(payload))
     # Quote 99 < entry 100 -> strategy stays NO_SIGNAL; only the external BUY acts.
     b = SimBroker(quotes={"US.AAPL": 99.0}, cash=100000.0)
-    runner, db, gate = _build(tmp_path, b, inbox=SignalInbox(str(inbox_dir)))
+    runner, db, gate = _build(tmp_path, b, inbox=SignalInbox(str(inbox_dir), ttl_hours=0))
 
     # Pre-market: the drop is consumed but entries are closed -> deferred, not placed.
     runner.run_once(_dt(8, 31))
@@ -175,7 +175,7 @@ def test_run_once_skips_inbox_when_unhealthy(tmp_path):
                                    "transition": [], "points_delta": 10, "driver": "x"}]}
     (inbox_dir / "sig1.json").write_text(json.dumps(payload))
     b = SimBroker(quotes={"US.AAPL": 99.0}, cash=100000.0)
-    runner, db, gate = _build(tmp_path, b, healthy=False, inbox=SignalInbox(str(inbox_dir)))
+    runner, db, gate = _build(tmp_path, b, healthy=False, inbox=SignalInbox(str(inbox_dir), ttl_hours=0))
     assert runner.run_once(_dt(10, 0)) == "HALTED_UNHEALTHY"
     assert b.get_account().position_qty("US.AAPL") == 0   # no external order placed
     assert (inbox_dir / "sig1.json").exists()             # file NOT consumed while halted

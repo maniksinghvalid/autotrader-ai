@@ -15,7 +15,7 @@ _PAYLOAD = {
 
 
 def test_poll_reads_valid_file_and_moves_to_processed(tmp_path):
-    inbox = SignalInbox(str(tmp_path))
+    inbox = SignalInbox(str(tmp_path), ttl_hours=0)
     (tmp_path / "a.json").write_text(json.dumps(_PAYLOAD))
     sigs = inbox.poll()
     assert len(sigs) == 1
@@ -25,7 +25,7 @@ def test_poll_reads_valid_file_and_moves_to_processed(tmp_path):
 
 
 def test_poll_moves_malformed_file_to_rejected_without_crashing(tmp_path):
-    inbox = SignalInbox(str(tmp_path))
+    inbox = SignalInbox(str(tmp_path), ttl_hours=0)
     (tmp_path / "bad.json").write_text("{not valid json")
     sigs = inbox.poll()
     assert sigs == []
@@ -33,12 +33,12 @@ def test_poll_moves_malformed_file_to_rejected_without_crashing(tmp_path):
 
 
 def test_poll_empty_dir_returns_empty(tmp_path):
-    inbox = SignalInbox(str(tmp_path))
+    inbox = SignalInbox(str(tmp_path), ttl_hours=0)
     assert inbox.poll() == []
 
 
 def test_poll_is_idempotent_across_runs(tmp_path):
-    inbox = SignalInbox(str(tmp_path))
+    inbox = SignalInbox(str(tmp_path), ttl_hours=0)
     (tmp_path / "a.json").write_text(json.dumps(_PAYLOAD))
     assert len(inbox.poll()) == 1
     assert inbox.poll() == []   # file already consumed -> nothing re-processed

@@ -143,9 +143,20 @@ def _quarantine(inbox_dir: Path, raw: bytes) -> Path:
     return _atomic_write(inbox_dir / "rejected", raw, "rej-")
 
 
+def _is_stale(payload_ts: datetime, now: datetime, freshness_minutes: float) -> bool:
+    """True when payload_ts is more than freshness_minutes away from now, in
+    EITHER direction (too old OR suspiciously future-dated). Naive timestamps
+    are treated as UTC. freshness_minutes<=0 disables the check (C3)."""
+    if freshness_minutes <= 0:
+        return False
+    ts = payload_ts if payload_ts.tzinfo else payload_ts.replace(tzinfo=timezone.utc)
+    return abs((now - ts).total_seconds()) > freshness_minutes * 60.0
+
+
 def create_app(inbox_dir: str, secret: str, max_body: int = _MAX_BODY_DEFAULT,
               token: Optional[str] = None,
-              audit_max_bytes: int = _AUDIT_MAX_BYTES_DEFAULT) -> Flask:
+              audit_max_bytes: int = _AUDIT_MAX_BYTES_DEFAULT,
+              freshness_minutes: float = 15.0, now_fn=None) -> Flask:
     app = Flask("autotrader-webhook")
     app.config["MAX_CONTENT_LENGTH"] = max_body  # Flask returns 413 past this
     inbox = Path(os.path.expanduser(inbox_dir))
@@ -154,6 +165,7 @@ def create_app(inbox_dir: str, secret: str, max_body: int = _MAX_BODY_DEFAULT,
         logger.warning("single-secret mode: token == signing key — "
                        "set AUTOTRADER_WEBHOOK_TOKEN")
     audit_throttle = _AuditThrottle()
+    now_fn = now_fn or (lambda: datetime.now(timezone.utc))
 
     @app.get("/healthz")
     def healthz():
@@ -204,6 +216,12 @@ def create_app(inbox_dir: str, secret: str, max_body: int = _MAX_BODY_DEFAULT,
                 except ValidationError:
                     payload = None
                 if payload is not None:
+                    if _is_stale(payload.timestamp, now_fn(), freshness_minutes):
+                        qpath = _quarantine(inbox, raw)
+                        logger.warning("webhook payload stale (ts=%s), quarantined %s",
+                                       payload.timestamp.isoformat(), qpath.name)
+                        return jsonify({"error": "stale_timestamp",
+                                        "routine_id": payload.routine_id}), 400
                     path = _atomic_enqueue(inbox, coerced)
                     logger.info("webhook enqueued (coerced) %s (routine_id=%s, %d change(s))",
                                 path.name, payload.routine_id, len(payload.signal_changes))
@@ -217,6 +235,12 @@ def create_app(inbox_dir: str, secret: str, max_body: int = _MAX_BODY_DEFAULT,
             detail = [{"loc": ".".join(str(p) for p in err["loc"]), "msg": err["msg"]}
                       for err in e.errors()]
             return jsonify({"error": "invalid payload", "detail": detail}), 400
+        if _is_stale(payload.timestamp, now_fn(), freshness_minutes):
+            qpath = _quarantine(inbox, raw)
+            logger.warning("webhook payload stale (ts=%s), quarantined %s",
+                           payload.timestamp.isoformat(), qpath.name)
+            return jsonify({"error": "stale_timestamp",
+                            "routine_id": payload.routine_id}), 400
         path = _atomic_enqueue(inbox, raw)
         logger.info("webhook enqueued %s (routine_id=%s, %d change(s))",
                     path.name, payload.routine_id, len(payload.signal_changes))
@@ -240,7 +264,9 @@ def run() -> int:  # pragma: no cover — live entrypoint
     host = os.getenv("AUTOTRADER_WEBHOOK_HOST", "127.0.0.1")
     port = int(os.getenv("AUTOTRADER_WEBHOOK_PORT", "8799"))
     max_body = int(os.getenv("AUTOTRADER_WEBHOOK_MAX_BODY", str(_MAX_BODY_DEFAULT)))
-    app = create_app(inbox_dir, secret, max_body, token=token)
+    freshness_minutes = float(os.getenv("AUTOTRADER_WEBHOOK_FRESHNESS_MIN", "15"))
+    app = create_app(inbox_dir, secret, max_body, token=token,
+                     freshness_minutes=freshness_minutes)
     logger.info("webhook on %s:%d -> inbox %s (localhost-only; expose via `ngrok http %d`)",
                 host, port, inbox_dir, port)
     app.run(host=host, port=port, debug=False, use_reloader=False)

@@ -10,6 +10,7 @@ import logging
 import os
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 
@@ -45,7 +46,8 @@ def atomic_write_bytes(inbox_dir: Path, raw: bytes) -> Path:
 
 class SignalInbox:
     def __init__(self, inbox_dir: str, confidence_scale: float = 10.0,
-                 on_targets=None):
+                 on_targets=None, seen_get=None, seen_set=None,
+                 ttl_hours: float = 24.0, now_fn=None):
         self._dir = Path(inbox_dir)
         self._processed = self._dir / "processed"
         self._rejected = self._dir / "rejected"
@@ -53,6 +55,13 @@ class SignalInbox:
             d.mkdir(parents=True, exist_ok=True)
         self._scale = confidence_scale
         self._on_targets = on_targets
+        # Replay protection (C3): seen_get/seen_set dedup by routine_id, ttl_hours
+        # quarantines payloads too old to trust. Defense in depth — this covers the
+        # file-drop adapter path, which the webhook's freshness window never sees.
+        self._seen_get = seen_get
+        self._seen_set = seen_set
+        self._ttl_hours = ttl_hours
+        self._now = now_fn or (lambda: datetime.now(timezone.utc))
 
     def poll(self) -> List[Signal]:
         """Validate + normalize every top-level *.json file, moving each out of
@@ -64,6 +73,20 @@ class SignalInbox:
             try:
                 payload = RoutineSignalPayload.model_validate_json(
                     path.read_text(encoding="utf-8"))
+                key = f"routine:{payload.routine_id}"
+                if self._seen_get is not None and self._seen_get(key):
+                    logger.warning("duplicate routine_id %s — skipped (replay "
+                                   "protection)", payload.routine_id)
+                    path.replace(self._processed / path.name)
+                    continue
+                ts = payload.timestamp if payload.timestamp.tzinfo else \
+                    payload.timestamp.replace(tzinfo=timezone.utc)
+                if self._ttl_hours > 0 and \
+                        (self._now() - ts).total_seconds() > self._ttl_hours * 3600.0:
+                    logger.warning("signal payload %s older than TTL (%s) — "
+                                   "quarantined, not routed", path.name, payload.timestamp)
+                    path.replace(self._rejected / path.name)
+                    continue
                 if payload.portfolio_targets and self._on_targets is not None:
                     self._on_targets(
                         payload.timestamp.date().isoformat(),
@@ -74,5 +97,7 @@ class SignalInbox:
                 logger.warning("rejected signal file %s: %s", path.name, e)
                 path.replace(self._rejected / path.name)
                 continue
+            if self._seen_get is not None and self._seen_set is not None:
+                self._seen_set(key, self._now().date().isoformat())
             path.replace(self._processed / path.name)
         return signals
