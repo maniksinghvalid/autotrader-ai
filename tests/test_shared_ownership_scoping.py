@@ -2,6 +2,8 @@
 ingest the SNP bot's orders/positions/fills."""
 from datetime import date
 
+import pytest
+
 from autotrader.config import RiskConfig
 from autotrader.db import DB
 from autotrader.domain import Fill, OrderRequest, Position
@@ -67,6 +69,33 @@ def test_stop_reconcile_shared_ignores_foreign(tmp_path):
     assert "US.SNP" not in _Eng.attached                 # no stop on SNP's position
 
 
+def test_stop_reconcile_shared_attaches_owned_alongside_foreign(tmp_path):
+    """Positive-case companion to test_stop_reconcile_shared_ignores_foreign:
+    an OWNED position (US.MARA, has a trades row) held simultaneously with a
+    FOREIGN position (US.SNP, no trades row) must still get its trailing stop
+    attached in SHARED mode — the scoping must discriminate, not just exclude
+    everything foreign."""
+    db = DB(str(tmp_path / "t.db"))
+    b = SimBroker({"US.SNP": 50.0, "US.MARA": 20.0})
+    b._positions["US.SNP"] = Position("US.SNP", 5, 48.0)     # foreign position
+    b._positions["US.MARA"] = Position("US.MARA", 10, 19.0)  # our position
+    db.record_trade(client_order_id="at-seed", symbol="US.MARA", side="BUY", qty=10,
+                    order_type="MARKET", limit_price=None,
+                    broker_order_id="sim-seed", state="FILLED")
+
+    class _Eng:
+        attached = []
+        def attach_trailing_stop(self, symbol, qty, price, tag):
+            self.attached.append(symbol)
+            return True
+
+    sm = StopManager(_Eng(), b, db, _cfg("SHARED"))
+    result = sm.reconcile(date(2026, 7, 6))
+    assert "US.MARA" in _Eng.attached           # owned position gets a stop
+    assert "US.SNP" not in _Eng.attached        # foreign position does not
+    assert result.attached == 1
+
+
 def test_stop_reconcile_sole_still_cancels_unrecognized(tmp_path):
     """SOLE-mode regression guard: an order with no trades row is still an
     orphan and gets cancelled — SHARED's foreign-order carve-out must not leak
@@ -108,6 +137,30 @@ def test_ground_truth_sync_owned_only_filters_foreign_positions(tmp_path):
     ground_truth_sync(b, db, owned_only=True)
     rows = {r[0] for r in db._conn.execute("SELECT symbol FROM positions").fetchall()}
     assert rows == {"US.MARA"}
+
+
+def test_ground_truth_sync_sole_preserves_partial_failure_order(tmp_path):
+    """Finding 2 regression guard: before V11, ground_truth_sync replaced
+    positions BEFORE fetching fills. That order must be preserved exactly in
+    SOLE mode (owned_only=False, the default) — so if db.record_fills raises,
+    the position replacement is already committed, matching pre-Task-17
+    partial-failure semantics (git show 81ed89a:autotrader/lifecycle.py). If
+    the reorder introduced for SHARED mode ever leaked into SOLE mode, fills
+    would be fetched/recorded first and a raise there would leave positions
+    untouched — this test would then fail."""
+    db = DB(str(tmp_path / "t.db"))
+    b = SimBroker({"US.MARA": 20.0})
+    b._positions["US.MARA"] = Position("US.MARA", 10, 19.0)
+
+    def _boom(fills):
+        raise RuntimeError("simulated fills failure")
+    db.record_fills = _boom
+
+    with pytest.raises(RuntimeError):
+        ground_truth_sync(b, db)  # owned_only defaults to False (SOLE)
+
+    rows = {r[0] for r in db._conn.execute("SELECT symbol FROM positions").fetchall()}
+    assert rows == {"US.MARA"}   # positions already committed before fills raised
 
 
 def test_ground_truth_sync_sole_ingests_everything(tmp_path):

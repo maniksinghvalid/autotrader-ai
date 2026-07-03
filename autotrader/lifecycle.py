@@ -31,30 +31,50 @@ def ground_truth_sync(broker: Broker, db: DB, since: Optional[str] = None,
     on the shared paper account must never enter AutoTrader's own projection.
     Fills are kept only when their client_order_id carries our "at-" prefix;
     positions are kept only when their symbol is in db.owned_symbols() (or is a
-    symbol just seen in one of our own owned fills this sync). SOLE (default)
-    is byte-for-byte today's behavior."""
+    symbol just seen in one of our own owned fills this sync).
+
+    SOLE (default, owned_only=False) is byte-for-byte today's (pre-V11)
+    behavior, including operation order: positions are replaced BEFORE fills
+    are fetched, so a partial failure (fills raising after positions already
+    committed) behaves exactly as it did before this task. owned_only=True
+    needs fills fetched first so the positions filter can union in symbols
+    from just-synced owned fills — that reordering is confined to this branch
+    and never runs in SOLE mode."""
     snap = broker.get_account()
-    fills = broker.reconcile_fills(since)
-    if fills is None:
-        logger.warning("ground_truth_sync: fills query failed — skipping fill projection")
-        new = 0
+    if not owned_only:
+        # Original (pre-V11) order: positions first, then fills.
+        if snap.positions_loaded:
+            db.replace_positions(list(snap.positions))
+        else:
+            # Position query failed — snap.positions is an EMPTY placeholder, not
+            # broker truth. Replacing would wipe the projection with nothing.
+            logger.warning("ground_truth_sync: positions not loaded — projection kept as-is")
+        fills = broker.reconcile_fills(since)
+        if fills is None:
+            logger.warning("ground_truth_sync: fills query failed — skipping fill projection")
+            new = 0
+        else:
+            new = db.record_fills(fills)
     else:
-        if owned_only:
-            fills = [f for f in fills
-                     if f.client_order_id and f.client_order_id.startswith("at-")]
-        new = db.record_fills(fills)
-    if snap.positions_loaded:
-        positions = list(snap.positions)
-        if owned_only:
-            owned = db.owned_symbols() | {f.symbol for f in (fills or [])
-                                          if f.client_order_id
-                                          and f.client_order_id.startswith("at-")}
-            positions = [p for p in positions if p.symbol in owned]
-        db.replace_positions(positions)
-    else:
-        # Position query failed — snap.positions is an EMPTY placeholder, not
-        # broker truth. Replacing would wipe the projection with nothing.
-        logger.warning("ground_truth_sync: positions not loaded — projection kept as-is")
+        # SHARED-mode order: fills first, so owned-fill symbols can be unioned
+        # into the positions filter below.
+        fills = broker.reconcile_fills(since)
+        if fills is None:
+            logger.warning("ground_truth_sync: fills query failed — skipping fill projection")
+            new = 0
+            owned_fills = []
+        else:
+            owned_fills = [f for f in fills
+                           if f.client_order_id and f.client_order_id.startswith("at-")]
+            new = db.record_fills(owned_fills)
+        if snap.positions_loaded:
+            owned = db.owned_symbols() | {f.symbol for f in owned_fills}
+            positions = [p for p in snap.positions if p.symbol in owned]
+            db.replace_positions(positions)
+        else:
+            # Position query failed — snap.positions is an EMPTY placeholder, not
+            # broker truth. Replacing would wipe the projection with nothing.
+            logger.warning("ground_truth_sync: positions not loaded — projection kept as-is")
     reconcile_open_orders(broker, db)
     logger.info("ground_truth_sync: %d position(s), %d new fill(s)",
                 len(snap.positions), new)
