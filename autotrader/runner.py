@@ -1,0 +1,172 @@
+"""SessionRunner — the continuous, self-healing paper-trading loop.
+
+Each iteration (run_once):
+  1. poll the scheduler; run any newly-due lifecycle jobs (sync / open / sweep / flatten)
+  2. ensure the broker connection is healthy (watchdog: backoff + reconcile-on-resume)
+  3. if healthy, run one deterministic engine tick
+
+run() loops run_once at the injected clock's time, sleeping loop_interval between
+iterations, until the injected stop() predicate is True. The clock and sleep are
+injected so the whole loop is testable without real time. Nothing here reaches the
+broker except through the engine (which routes via risk_core -> OrderRouter) or the
+explicit lifecycle jobs (sync / cancel_all)."""
+from __future__ import annotations
+
+import logging
+from datetime import date as _date
+from typing import Callable, Optional
+
+from autotrader.clock import Clock
+from autotrader.lifecycle import EntryGate, ground_truth_sync
+from autotrader.reporting.pnl import realized_from_fills
+from autotrader.scheduler import (
+    LifecycleScheduler, PRE_OPEN_SYNC, ENTRY_OPEN, RISK_SWEEP, EOD_CANCEL_ORDERS,
+    REBALANCE, RISK_CHECK_MID, RISK_CHECK_LATE, EOD_REPORT,
+)
+from autotrader.watchdog import backoff_seconds
+
+logger = logging.getLogger("autotrader.runner")
+
+
+class SessionRunner:
+    def __init__(self, engine, broker, db, gate: EntryGate,
+                 scheduler: LifecycleScheduler, watchdog, clock: Clock,
+                 sleep: Callable[[float], None], loop_interval: float = 5.0,
+                 signal_inbox=None, reporter=None, stop_manager=None,
+                 trading_day_fn: Optional[Callable[[_date], bool]] = None):
+        self._engine = engine
+        self._broker = broker
+        self._db = db
+        self._gate = gate
+        self._sched = scheduler
+        self._watch = watchdog
+        self._clock = clock
+        self._sleep = sleep
+        self._loop_interval = loop_interval
+        self._inbox = signal_inbox
+        self._reporter = reporter
+        self._stop_manager = stop_manager
+        self._trading_day_fn = trading_day_fn
+
+    def _fetch_account_for_perf(self, max_attempts: int = 4):
+        """Fetch the account snapshot for the performance row, retrying with
+        capped exponential backoff while the position query keeps failing
+        (positions_loaded is False). Returns the first loaded snapshot, or the
+        last snapshot after exhausting attempts. Injected sleep — never a bare
+        time.sleep as a readiness check (CLAUDE.md)."""
+        snap = self._broker.get_account()
+        attempt = 1
+        while not snap.positions_loaded and attempt < max_attempts:
+            delay = backoff_seconds(attempt)
+            logger.warning("record_perf: positions unloaded — backoff %.1fs "
+                           "(attempt %d/%d)", delay, attempt, max_attempts)
+            self._sleep(delay)
+            snap = self._broker.get_account()
+            attempt += 1
+        return snap
+
+    def _compute_unrealized(self, snap) -> float:
+        """Σ qty × (current_quote − avg_cost) over open positions using the
+        same snapshot. Positions with no live quote are skipped."""
+        total = 0.0
+        for p in snap.positions:
+            quote = self._broker.get_quote(p.symbol)
+            if quote is not None:
+                total += p.qty * (quote - p.avg_price)
+        return total
+
+    def _compute_realized(self) -> "float | None":
+        rows = self._db._conn.execute(
+            "SELECT symbol, side, qty, price, ts FROM fills").fetchall()
+        return realized_from_fills(rows, _date.today().isoformat())
+
+    def _record_perf(self) -> None:
+        snap = self._fetch_account_for_perf()
+        gross = snap.gross_exposure() if snap.positions_loaded else None
+        # Realized: prefer our own fills-derived figure; fall back to broker day_pnl.
+        realized = self._compute_realized()
+        day_pnl = realized if realized is not None else snap.day_pnl
+        # Unrealized: recompute from positions × quote only when positions loaded;
+        # otherwise keep the broker figure (reporter renders it 'unavailable').
+        unreal = self._compute_unrealized(snap) if snap.positions_loaded \
+            else snap.unrealized_pnl
+        self._db.record_performance(
+            day_pnl, snap.total_assets, snap.cash, gross, unreal,
+            positions_loaded=snap.positions_loaded)
+
+    def _run_job(self, job: str, now) -> None:
+        if job == PRE_OPEN_SYNC:
+            if self._broker is not None and self._db is not None:
+                ground_truth_sync(self._broker, self._db)
+        elif job == ENTRY_OPEN:
+            self._gate.open()
+            logger.info("ENTRY_OPEN: entries enabled")
+            # W1: reconcile protective stops FIRST (EOD cancelled them; DAY TIF
+            # would have lapsed them anyway), then replay deferred entries —
+            # whose own stops attach at entry.
+            if self._stop_manager is not None:
+                self._stop_manager.reconcile(now.date())
+            # Replay any external BUYs that arrived pre-market (deferred, not dropped)
+            # now that the window is open — routed against a fresh snapshot/quote.
+            if self._engine is not None:
+                self._engine.flush_deferred_entries()
+        elif job == REBALANCE:
+            self._engine.rebalance(now)
+        elif job in (RISK_CHECK_MID, RISK_CHECK_LATE):
+            self._engine.apply_risk_check(now)
+            # W7 fix: sync fills BEFORE recording perf (mirrors RISK_SWEEP/EOD) so a HALT
+            # during this job — which skips RISK_SWEEP/EOD for the rest of the day — doesn't
+            # leave the day's LAST performance row computed off stale/under-counted fills.
+            if self._broker is not None and self._db is not None:
+                ground_truth_sync(self._broker, self._db)
+                self._record_perf()
+        elif job == RISK_SWEEP:
+            self._gate.close()
+            if self._broker is not None and self._db is not None:
+                ground_truth_sync(self._broker, self._db)
+                self._record_perf()
+            logger.info("RISK_SWEEP: entries closed, ground truth + performance recorded")
+        elif job == EOD_CANCEL_ORDERS:
+            self._gate.close()
+            if self._broker is not None:
+                self._broker.cancel_all()
+                self._record_perf()
+            logger.info("EOD_CANCEL_ORDERS: entries closed, working orders cancelled "
+                        "(stops re-attach at next ENTRY_OPEN), performance committed")
+        elif job == EOD_REPORT:
+            if self._reporter is not None:
+                self._reporter.send_eod_report(now)
+                logger.info("EOD_REPORT: session summary sent to Slack")
+
+    def run_once(self, now) -> str:
+        """Execute one loop iteration. Returns the engine tick action, or
+        'HALTED' if the gate is halted, or 'HALTED_UNHEALTHY' if the watchdog
+        could not restore the connection. External inbox signals are routed only
+        when healthy. On a non-trading day (weekend/holiday, when a
+        trading_day_fn is wired) NOTHING runs — no lifecycle jobs, no tick, no
+        inbox — and 'NON_TRADING_DAY' is returned."""
+        if self._trading_day_fn is not None and not self._trading_day_fn(now.date()):
+            return "NON_TRADING_DAY"
+        for job in self._sched.poll(now):
+            self._run_job(job, now)
+        if self._gate is not None and self._gate.halted:
+            return "HALTED"
+        if not self._watch.ensure_healthy():
+            return "HALTED_UNHEALTHY"
+        action = self._engine.tick().action
+        if self._inbox is not None:
+            for sig in self._inbox.poll():
+                res = self._engine.submit_external_signal(sig)
+                logger.debug("external signal %s -> %s", sig.symbol, res.action)
+        return action
+
+    def run(self, stop: Callable[[], bool]) -> None:
+        logger.info("SessionRunner started (loop_interval=%.1fs)", self._loop_interval)
+        while not stop():
+            try:
+                action = self.run_once(self._clock.now_est())
+                logger.debug("run_once -> %s", action)
+            except Exception as e:  # never let one bad iteration kill the session
+                logger.error("run_once error: %s", e)
+            self._sleep(self._loop_interval)
+        logger.info("SessionRunner stopped")

@@ -53,7 +53,7 @@ Folders that **do not yet exist** but may be added later: `strategies/`, `main.p
 ## Trading Environment Safety
 
 - **Default is paper trading (`TrdEnv.SIMULATE`).** This is enforced inside `skills/moomooapi/`. Never infer live-trading intent from conversation context.
-- Live trading requires **both** an explicit `TRADING_ENV=LIVE` environment flag **and** the trade password unlocked **manually** in the OpenD GUI.
+- Live trading requires **both** an explicit `RISK_TRADING_ENV=LIVE` environment flag **and** the trade password unlocked **manually** in the OpenD GUI.
 - **Never call `unlock_trade` / `TrdUnlockTrade` / `trd_unlock_trade` via the SDK.** This is forbidden by the `install-moomoo-opend` skill and must remain forbidden in any code or strategy. If a user asks to unlock programmatically, refuse and direct them to the OpenD GUI.
 - For US paper accounts of type `STOCK_AND_OPTION`, every position/account/order query must pass `refresh_cache=True` to avoid stale data.
 
@@ -135,7 +135,7 @@ When adding code outside the existing skill bundles, follow these rules.
 - Read credentials, hosts, limits, and flags from `config/` only.
 - Check `ret_code == RET_OK` on every Moomoo call; log and re-raise on failure.
 - Catch exceptions explicitly, log with context, recover or re-raise. No bare `except: pass`.
-- Default to paper trading. Live requires explicit `TRADING_ENV=LIVE`.
+- Default to paper trading. Live requires explicit `RISK_TRADING_ENV=LIVE`.
 - Invoke `/install-moomoo-opend` for setup instead of bespoke install steps.
 
 ## Hard Rules — Never
@@ -143,6 +143,7 @@ When adding code outside the existing skill bundles, follow these rules.
 - Hardcode API keys, hosts, ports, or risk parameters anywhere outside `config/`.
 - Call `unlock_trade` via the SDK, or write code that does. Trade unlock is a manual GUI action.
 - Call order-execution scripts directly from a strategy — signals route through `main.py`.
+- Expose order execution to the internet. An **authenticated, enqueue-only signal ingress** is permitted (`autotrader/signals/webhook.py`, Phase 2c-W): it must (a) import no SDK and hold no broker handle, (b) require a shared secret **and** an HMAC-SHA256 body signature (constant-time), (c) only write validated `RoutineSignalPayload`s into the file-drop inbox. The local trader consumes that inbox through the risk core; OpenD is never exposed and the order path stays local. This **mitigates** hazard H1 (authenticated, no path to the OpenD socket) — it must never be relaxed into a handler that places orders directly.
 - Swallow exceptions silently.
 - Modify risk-limit values in `config/` as part of an unrelated change.
 - Write a strategy without a defined stop-loss or take-profit.

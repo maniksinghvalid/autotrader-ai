@@ -1,0 +1,67 @@
+# Copy to config/risk.config and adjust. Risk-limit CHANGES require explicit human
+# review (CLAUDE.md). These are presentation/limit values, not secrets.
+# Account/host/PIN are NOT here — they come from FUTU_* env vars and the OpenD GUI.
+RISK_TRADING_ENV=PAPER
+RISK_MIN_CONFIDENCE=0.60
+RISK_MAX_ORDER_NOTIONAL=2000
+RISK_MAX_POSITION_QTY=100
+RISK_DAILY_LOSS_LIMIT=500
+RISK_MAX_GROSS_EXPOSURE=10000
+RISK_ALLOWED_SYMBOLS=US.AAPL,US.MSFT,US.NIO
+# Broker-resting trailing-stop percent attached on each BUY entry (Phase 2c).
+# 0 disables; 5.0 = a 5% trailing stop that survives an OpenD outage (research R5).
+# Risk-limit CHANGES require explicit human review (CLAUDE.md).
+RISK_TRAILING_STOP_PCT=5.0
+
+# Risk-per-trade position sizing for BUY entries (additive; 0 disables -> fixed
+# ORDER_QTY). RISK_PER_TRADE_PCT is a FRACTION of total_assets risked to the stop:
+# 0.01 = risk 1% of equity. qty = floor(equity * RISK_PER_TRADE_PCT / stop_dist),
+# where stop_dist = entry - signal_hard_stop (else entry * RISK_TRAILING_STOP_PCT/100),
+# then scaled by confidence between FLOOR (at RISK_MIN_CONFIDENCE) and CEIL (at 1.0),
+# and clamped down to the notional/position/exposure caps above.
+# Risk-limit CHANGES require explicit human review (CLAUDE.md).
+RISK_PER_TRADE_PCT=0.0
+RISK_CONFIDENCE_SIZE_FLOOR=0.5
+RISK_CONFIDENCE_SIZE_CEIL=1.0
+
+# Path for the SQLite WAL projection. Default: ~/.autotrader.db
+# AUTOTRADER_DB_PATH=~/.autotrader.db
+
+# Continuous-loop iteration interval in seconds (Phase 2b). Default: 5
+# AUTOTRADER_LOOP_INTERVAL=5
+
+# External-signal file-drop inbox directory (Phase 2c). Unset = ingress disabled.
+# Drop RoutineSignalPayload *.json files here; they route through the risk core.
+# AUTOTRADER_SIGNAL_INBOX=~/.autotrader_inbox
+
+# Webhook ingress secrets (Phase 2c-W) live in config/secure.config (GITIGNORED)
+# — see config/secure.config.example. The webhook process also needs the same
+# AUTOTRADER_SIGNAL_INBOX value as the trader (it enqueues into that directory).
+
+# --- Portfolio rebalancing (Phase: rebalancing). Disabled by default. -----------
+# Midday REBALANCE job (12:30) trims/tops-up positions toward signal-score target
+# weights; RISK_CHECK jobs (13:30, 15:00) run a tiered loss preservation gate.
+# Risk-limit CHANGES require explicit human review (CLAUDE.md).
+RISK_REBALANCE_ENABLED=false
+RISK_REBALANCE_BAND_PCT=5.0           # ±percentage-points of weight before acting
+RISK_REBALANCE_MIN_NOTIONAL=200       # skip rebalance trades smaller than this
+RISK_REBALANCE_CASH_BUFFER_PCT=10.0   # reserve as cash; weights apply to the rest
+RISK_TARGET_STALENESS_HOURS=24        # skip rebalance if the target snapshot is older
+# Hard daily-loss flatten+halt. MUST exceed the soft RISK_DAILY_LOSS_LIMIT (which
+# only closes the entry gate). Breach when day_pnl <= -value.
+RISK_DAILY_LOSS_HALT=1000
+
+# --- Options overlays (DEFAULT OFF; HUMAN-REVIEW values) ---
+# Leave RISK_ALLOWED_OVERLAYS empty and RISK_MAX_OPTION_CONTRACTS=0 to keep options
+# disabled (the defaults). Enable only after explicit human review of each limit.
+# Risk-limit CHANGES require explicit human review (CLAUDE.md).
+RISK_ALLOWED_OVERLAYS=                 # e.g. COVERED_CALL,PROTECTIVE_PUT,COLLAR,BEAR_PUT_SPREAD,CALL_DIAGONAL,LEAP
+RISK_MAX_OPTION_CONTRACTS=0            # per-leg contract cap (0 = options off)
+RISK_OPTION_DEFAULT_CONTRACTS=1        # contract count for non-share-covered strategies (BEAR_PUT_SPREAD, CALL_DIAGONAL, LEAP)
+RISK_OPTION_MAX_RISK_PCT=0.02          # NLV-derived cap: debit legs pay ≤ NLV*pct; credit legs collect ≤ NLV*pct/2
+RISK_MAX_OPTION_PREMIUM_PER_TRADE=0    # optional absolute dollar ceiling on top of the NLV cap (0 = off)
+RISK_OPTION_TARGET_DELTA=0.30          # fallback delta target (covered call, protective put)
+RISK_OPTION_DTE_MIN=30
+RISK_OPTION_DTE_MAX=45
+RISK_OPTION_DTE_TO_CLOSE=7             # exit declaration (enforced in O4)
+RISK_OPTION_PROFIT_TARGET_PCT=0.5      # exit declaration (enforced in O4)
