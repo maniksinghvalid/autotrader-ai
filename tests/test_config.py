@@ -96,3 +96,15 @@ def test_market_holidays_bad_date_raises(monkeypatch):
     monkeypatch.setenv("RISK_MARKET_HOLIDAYS", "2026-13-45")
     with pytest.raises(ValueError):
         load_risk_config()
+
+
+def test_unrealized_loss_gate_defaults_disabled(monkeypatch):
+    monkeypatch.delenv("RISK_UNREALIZED_LOSS_GATE", raising=False)
+    assert load_risk_config().unrealized_loss_gate == 0.0
+    monkeypatch.setenv("RISK_UNREALIZED_LOSS_GATE", "0")
+    assert load_risk_config().unrealized_loss_gate == 0.0
+
+
+def test_unrealized_loss_gate_from_env(monkeypatch):
+    monkeypatch.setenv("RISK_UNREALIZED_LOSS_GATE", "250")
+    assert load_risk_config().unrealized_loss_gate == 250.0
