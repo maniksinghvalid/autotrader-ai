@@ -6,6 +6,7 @@ behind is_opend_ready()."""
 from __future__ import annotations
 
 import logging
+import logging.handlers
 from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING, List, Optional, Tuple
@@ -920,7 +921,6 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
     # redirection. Off by default — only added when AUTOTRADER_LOG_DIR is set.
     log_dir = os.getenv("AUTOTRADER_LOG_DIR")
     if log_dir:
-        import logging.handlers
         os.makedirs(os.path.expanduser(log_dir), exist_ok=True)
         fh = logging.handlers.RotatingFileHandler(
             os.path.join(os.path.expanduser(log_dir), "trader.log"),
