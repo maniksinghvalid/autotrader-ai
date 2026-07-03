@@ -99,6 +99,13 @@ CREATE TABLE IF NOT EXISTS engine_state (
     value      TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS strategy_claims (
+    symbol     TEXT PRIMARY KEY,   -- normalized code, e.g. US.NIO
+    origin     TEXT NOT NULL,      -- 'BREAKOUT' (spec D4: only breakout claims stored)
+    claimed_at TEXT NOT NULL,
+    session_id TEXT
+);
 """
 
 _PERFORMANCE_TABLE = """
@@ -365,6 +372,38 @@ class DB:
                 "SELECT key, value FROM engine_state WHERE key LIKE ? ORDER BY key",
                 (prefix + "%",)).fetchall()
         return rows
+
+    def claim_symbol(self, symbol: str, origin: str,
+                     session_id: Optional[str] = None) -> None:
+        """Mark `symbol` as owned by `origin` (breakout). Idempotent upsert."""
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO strategy_claims "
+                "(symbol,origin,claimed_at,session_id) VALUES (?,?,?,?)",
+                (symbol, origin, _now(), session_id))
+            self._conn.commit()
+
+    def release_claim(self, symbol: str) -> None:
+        """Release `symbol`'s claim. No-op if unclaimed."""
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM strategy_claims WHERE symbol=?", (symbol,))
+            self._conn.commit()
+
+    def get_claims(self) -> dict:
+        """{symbol: origin} for every current claim."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT symbol, origin FROM strategy_claims").fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    def held_symbols(self) -> set:
+        """{symbol} currently held (qty>0) per the positions projection — the
+        ground-truth basis for releasing stale claims after a sync."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT symbol FROM positions WHERE qty > 0").fetchall()
+        return {r[0] for r in rows}
 
     def owned_symbols(self) -> set:
         """Symbols AutoTrader itself has ever traded (trades is written only by
