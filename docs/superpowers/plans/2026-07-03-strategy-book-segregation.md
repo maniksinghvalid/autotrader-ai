@@ -485,17 +485,18 @@ def test_claim_written_before_submit_when_broker_raises(tmp_path):
 
 
 def test_filled_breakout_sell_releases_claim(tmp_path):
-    broker = SimBroker({"US.NIO": 5.0}, positions=[Position("US.NIO", 1, 5.0)])
+    broker = SimBroker({"US.NIO": 5.0})
+    broker._positions["US.NIO"] = Position("US.NIO", 1, 5.0)  # seed pattern from test_halt_flatten_order.py
     eng, db = _engine(tmp_path, broker, _cfg())
     db.claim_symbol("US.NIO", "BREAKOUT", "sess-x")
     res = eng._route_signal(Signal("US.NIO", "SELL", 0.9, "breakout"),
                             broker.get_account(), 5.0, origin="BREAKOUT")
     assert res.action == "ORDER_PLACED"
-    assert db.get_claims() == {}   # SimBroker fills immediately -> released inline
+    assert db.get_claims() == {}   # SimBroker auto_fill -> FILLED ack -> released inline
     db.close()
 ```
 
-> Note: confirm `SimBroker(..., positions=[...])` is the constructor's positions kwarg; if the local `SimBroker` seeds positions differently, match the pattern already used in `tests/test_halt_flatten_order.py`.
+> `SimBroker` has no `positions=` kwarg — seed via `broker._positions[sym] = Position(sym, qty, avg_price)` exactly as `tests/test_halt_flatten_order.py:25` does. `auto_fill` defaults True, so the SELL acks `FILLED` immediately.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -615,7 +616,8 @@ def _engine(tmp_path, broker):
 
 
 def test_tick_skips_held_unclaimed_position(tmp_path):
-    broker = SimBroker({"US.NIO": 0.90}, positions=[Position("US.NIO", 10, 1.0)])
+    broker = SimBroker({"US.NIO": 0.90})
+    broker._positions["US.NIO"] = Position("US.NIO", 10, 1.0)
     eng, db = _engine(tmp_path, broker)
     # No claim -> AI book owns it -> breakout tick must not manage the exit.
     assert eng.tick().action == "POSITION_NOT_OWNED"
@@ -623,7 +625,8 @@ def test_tick_skips_held_unclaimed_position(tmp_path):
 
 
 def test_tick_manages_held_claimed_position(tmp_path):
-    broker = SimBroker({"US.NIO": 0.90}, positions=[Position("US.NIO", 10, 1.0)])
+    broker = SimBroker({"US.NIO": 0.90})
+    broker._positions["US.NIO"] = Position("US.NIO", 10, 1.0)
     eng, db = _engine(tmp_path, broker)
     db.claim_symbol("US.NIO", "BREAKOUT", "sess-x")
     # Claimed -> breakout owns it -> the -10% move triggers a stop-loss SELL.
@@ -631,7 +634,7 @@ def test_tick_manages_held_claimed_position(tmp_path):
     db.close()
 ```
 
-> Confirm `ThresholdStrategy` produces a stop-loss SELL at price 0.90 vs avg 1.0 (−10% ≤ −5% stop). If the local `SimBroker` positions kwarg differs, mirror `tests/test_halt_flatten_order.py`.
+> Seed positions via `broker._positions[sym] = Position(...)` (no `positions=` kwarg — see `tests/test_halt_flatten_order.py:25`). At price 0.90 vs avg 1.0 the −10% move is ≤ the −5% stop, so `ThresholdStrategy` emits a stop-loss SELL — proving it's the claim guard, not "no signal", that skips.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -722,22 +725,27 @@ def _engine(tmp_path, broker, cfg):
 
 def test_claimed_symbol_not_traded_by_rebalance(tmp_path):
     # Targets score US.NIO 0 (would flatten a held position) and US.AAPL 1.0.
-    broker = SimBroker({"US.NIO": 5.0, "US.AAPL": 100.0},
-                       positions=[Position("US.NIO", 10, 5.0)])
+    broker = SimBroker({"US.NIO": 5.0, "US.AAPL": 100.0})
+    broker._positions["US.NIO"] = Position("US.NIO", 10, 5.0)
     eng, db = _engine(tmp_path, broker, _cfg())
-    db.upsert_target_weights("2026-07-03", {"US.NIO": 0.0, "US.AAPL": 1.0},
-                             ingested_at=NOW.isoformat())
+    # upsert_target_weights(as_of_date, [(symbol, score), ...]); it stamps
+    # ingested_at = _now() (UTC). Force it to NOW so `now - ingested_at` is fresh
+    # (pattern from tests/test_engine_rebalance_run.py:58).
+    db.upsert_target_weights("2026-07-03", [("US.NIO", 0.0), ("US.AAPL", 1.0)])
+    db._conn.execute("UPDATE target_weights SET ingested_at=?", (NOW.isoformat(),))
+    db._conn.commit()
     db.claim_symbol("US.NIO", "BREAKOUT", "sess-x")
 
     eng.rebalance(NOW)
 
     # No trade row for the claimed symbol (breakout owns its lifecycle).
-    trades = [t for t in db.all_trades() if t[3] == "US.NIO"]  # (…, symbol at idx 3)
-    assert trades == []
+    rows = db._conn.execute(
+        "SELECT symbol FROM trades WHERE symbol=?", ("US.NIO",)).fetchall()
+    assert rows == []
     db.close()
 ```
 
-> Adjust `db.upsert_target_weights` / `db.all_trades` to the exact method names and row shape in `db.py` (confirm the target-weights writer signature used elsewhere, e.g. in `tests/test_rebalance*`; the trades read may be `all_trades()` or a direct `SELECT` — mirror an existing rebalance test). The behavioral assertion (no trade for the claimed symbol) is the invariant that must hold.
+> Verified against the tree: `upsert_target_weights(as_of_date, [(symbol, score)])` stamps `ingested_at=_now()` internally, so the test overwrites it to `NOW` and passes `NOW` as the clock (staleness = `now - ingested_at`). There is no `all_trades()` reader — assert via the direct `db._conn.execute(...)` shown, the same reach-in existing rebalance tests use.
 
 - [ ] **Step 2: Run test to verify it fails**
 
