@@ -240,8 +240,14 @@ class MoomooBroker(Broker):
                 ask = self._c.safe_float(self._c.safe_get(row, "ask_price", "ask", default=0))
                 mid = (bid + ask) / 2 if (bid and ask) else self._c.safe_float(
                     self._c.safe_get(row, "last_price", "cur_price", default=0))
-                delta = self._c.safe_float(self._c.safe_get(
-                    row, "option_delta", "delta", default=0))
+                delta_raw = self._c.safe_get(row, "option_delta", "delta", default=None)
+                delta = self._c.safe_float(delta_raw) if delta_raw is not None else 0.0
+                if delta_raw is None or not math.isfinite(delta) or delta == 0:
+                    # C4: a chain row without a usable delta is unusable for
+                    # delta-target selection — drop it so SKIP_NO_CONTRACT fires
+                    # instead of an arbitrary (deepest-ITM) pick.
+                    logger.debug("chain row %s dropped: delta missing/NaN/0", code)
+                    continue
                 if strike <= 0 or mid <= 0:
                     continue
                 out.append(OptionQuote(code=code, underlying=underlying, expiry=expiry,

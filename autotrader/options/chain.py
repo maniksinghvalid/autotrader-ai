@@ -3,6 +3,7 @@ pick the contract closest to a target delta within a DTE window (D5). No I/O:
 the broker supplies the snapshot; this module just chooses. Imports domain only."""
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import date
 from typing import List, Optional
@@ -40,6 +41,7 @@ def select_contract(quotes: List[OptionQuote], right: OptionRight,
     candidates = [
         q for q in quotes
         if q.right == right and q.premium > 0
+        and math.isfinite(q.delta) and q.delta != 0        # C4: no greeks -> no pick
         and dte_min <= (q.expiry - asof).days <= dte_max
         and (pin_expiry is None or q.expiry == pin_expiry)
     ]

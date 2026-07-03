@@ -41,11 +41,15 @@ class OverlaySkip:
 def _validate_structure(overlay: OverlayType, legs: Tuple["OverlayLeg", ...]) -> Optional[str]:
     """Defined-risk sanity check after contracts are selected. Returns a skip
     reason string or None. Defends the coverage guarantee the risk core relies on.
-    COLLAR and LEAP are intentionally not validated here: the collar's short call
-    is share-covered and validated by the risk core; LEAP has no short leg."""
+    LEAP is intentionally not validated here: it has no short leg."""
     longs = [l for l in legs if l.request.side == "BUY"]
     shorts = [l for l in legs if l.request.side == "SELL"]
-    if overlay is OverlayType.BEAR_PUT_SPREAD:
+    if overlay is OverlayType.COLLAR:
+        put, call = longs[0].quote, shorts[0].quote
+        if not (put.strike < call.strike):   # C4: inverted collar (garbage-delta
+                                              # selection) must be rejected
+            return "SKIP_INVALID_STRUCTURE"
+    elif overlay is OverlayType.BEAR_PUT_SPREAD:
         lo, sh = longs[0].quote, shorts[0].quote
         if lo.expiry != sh.expiry:
             return "SKIP_INVALID_STRUCTURE"

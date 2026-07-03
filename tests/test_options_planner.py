@@ -262,6 +262,25 @@ def test_bear_put_spread_invalid_structure_when_no_debit():
     assert isinstance(skip, OverlaySkip) and skip.reason == "SKIP_INVALID_STRUCTURE"
 
 
+def test_collar_invalid_structure_when_put_strike_not_below_call_strike():
+    # C4: rig the chain so the selected put strike (220) ends up ABOVE the
+    # selected call strike (210) at the same expiry -- an inverted collar,
+    # which could result from garbage-delta selection. Must SKIP, not plan.
+    a, near = _asof(), _asof() + timedelta(days=35)
+    bad = {
+        ("US.AAPL", "PUT"): [
+            OptionQuote("BADPUT", "US.AAPL", near, 220, "PUT", -0.30, 3.0),
+        ],
+        ("US.AAPL", "CALL"): [
+            OptionQuote("BADCALL", "US.AAPL", near, 210, "CALL", 0.30, 1.5),
+        ],
+    }
+    b = SimBroker(quotes={"US.AAPL": 200.0}, option_chains=bad)
+    skip = build_overlay_plan(_sig(OverlayType.COLLAR), _snap(100), b,
+                              _cfgN(), "s", _asof())
+    assert isinstance(skip, OverlaySkip) and skip.reason == "SKIP_INVALID_STRUCTURE"
+
+
 def test_collar_skips_no_contract_when_window_empty():
     skip = build_overlay_plan(_sig(OverlayType.COLLAR), _snap(100), _rich_broker(),
                               _cfgN(), "s", _asof() + timedelta(days=400))
