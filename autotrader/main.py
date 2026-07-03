@@ -161,6 +161,12 @@ class TradeEngine:
             return TickResult("NO_QUOTE", symbol)
 
         pos = next((p for p in snap.positions if p.symbol == symbol), None)
+        # Book segregation (spec D2): the breakout engine manages exits ONLY for
+        # positions it owns. A held-but-unclaimed position belongs to the AI book;
+        # leave it alone. (Flat symbols fall through and may enter, claiming on BUY.)
+        if pos is not None and pos.qty > 0 and self._db is not None:
+            if not books.is_breakout_claimed(symbol, self._db.get_claims()):
+                return TickResult(books.SKIP_POSITION_NOT_OWNED, symbol)
         ref_high = self._breakout_ref.high(symbol) if self._breakout_ref is not None else None
         signal = self._strat.evaluate(price=price, position=pos, ref_high=ref_high)
         if signal is None:
