@@ -23,6 +23,7 @@ def test_core_imports_do_not_load_moomoo_sdk():
         "          'autotrader.rebalance', 'autotrader.risk_check', 'autotrader.limit_pricing',\n"
         "          'autotrader.signals.schema', 'autotrader.signals.normalize',\n"
         "          'autotrader.signals.inbox', 'autotrader.signals.routine_adapter',\n"
+        "          'autotrader.books',\n"
         "          'autotrader.moomoo_broker'):\n"
         "    importlib.import_module(m)\n"
         "assert 'moomoo' not in sys.modules, 'core import pulled in the moomoo SDK'\n"
