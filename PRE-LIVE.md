@@ -178,6 +178,55 @@ Promotion criteria ("clean session," dry-run procedure) live in `CUTOVER.md`
       `config/secure.config`, restart, confirm the old value is rejected and
       the new one accepted).
 
+## Stage 2 — code (book segregation)
+
+Source: the strategy-book-segregation feature (spec/plan
+`docs/superpowers/{specs,plans}/2026-07-03-strategy-book-segregation*`), which
+segregates the internal breakout book from the AI/rebalance book via durable
+per-symbol claims. The feature itself is **shipped and paper-clean** (whole-
+feature review: merge-ready, no Critical; 704 passed / 2 skipped). This box
+tracks the one live-only hardening item it left open. It gates **Stage 2**
+because that is the first stage where an AI-book actor (external signals) can
+act on a symbol whose claim was wrongly released; it also applies to Stage 3
+(rebalance/overlays). At Stage 1 the claim lifecycle runs, but no AI-book actor
+exists to cause commingling harm.
+
+- [ ] **BS1 — Reconcile-vs-in-flight-entry hardening (Important, live-only).**
+      `TradeEngine.reconcile_claims()` releases any claim whose symbol is absent
+      from the positions projection (`db.held_symbols()`), which is refreshed
+      only by `ground_truth_sync`. On **live**, a breakout MARKET entry acks
+      `SUBMITTED` and fills asynchronously; a scheduled `ground_truth_sync` +
+      `reconcile_claims` (at `RISK_CHECK_MID` / `RISK_CHECK_LATE` /
+      `RISK_SWEEP`) that runs in the window after the entry ack but before the
+      fill lands sees the symbol as unheld, releases the claim, and then the
+      fill lands → breakout-held with no claim = the exact commingling this
+      feature prevents. It never re-claims. **Paper is unaffected** (SimBroker
+      fills at ack, so there is no window), which is why the feature ships
+      paper-clean and this is a live-gate item, not a code defect blocking the
+      merge. Probability is low even live: `_submit_with_escalation` blocks
+      until terminal, so the only window is post-final-submit async-fill
+      latency intersecting a scheduled sync.
+      **Fix (do this one FIRST):** in `reconcile_claims`, do not release a claim
+      that still has a non-terminal (working) entry order for the symbol — a
+      `db.held_symbols()`-style guard over the `trades` projection, or a grace
+      window on the stored-but-currently-unused `strategy_claims.claimed_at`
+      column. **Caution:** verify the `trades` row state lifecycle first
+      (does a `SUBMITTED` row transition to `FILLED` in the projection after a
+      fill reconciles?) — a naive "working order" guard over a row that never
+      leaves `SUBMITTED` would leak the claim permanently (AI book locked out
+      of the symbol forever). Needs its own TDD with a live-shaped async-fill
+      test (`SimBroker` `fill_latency_ticks`, the V1 rig).
+- [ ] **BS2/BS3 — Extend reconcile to the remaining heal paths (Minor; do
+      AFTER BS1).** Add `engine.reconcile_claims()` to the watchdog reconcile
+      lambda (`autotrader/main.py`, the reconnect path — spec names it as a
+      heal path but it currently calls `ground_truth_sync` only) and to the
+      `EOD_CANCEL_ORDERS` sync (`autotrader/runner.py`). Both are conservative-
+      direction gaps today (a stale claim is retained until the next scheduled
+      sync — `PRE_OPEN_SYNC` heals it before entries reopen — so no
+      commingling, just delayed AI re-entry). **Order matters:** each added
+      reconcile call site widens BS1's live race window, so these must land
+      only after BS1's guard is in place.
+
 ## Stage 3 — code (V7, V5 full exposure)
 
 - [ ] **V7 — Options chain safety (Critical C4).** Option contract selection
