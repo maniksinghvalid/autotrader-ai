@@ -25,24 +25,62 @@ class SyncResult:
     new_fills: int
 
 
-def ground_truth_sync(broker: Broker, db: DB, since: Optional[str] = None) -> SyncResult:
+def ground_truth_sync(broker: Broker, db: DB, since: Optional[str] = None,
+                      owned_only: bool = False) -> SyncResult:
+    """owned_only (V11, C6): SHARED-mode scoping — the SNP bot's fills/positions
+    on the shared paper account must never enter AutoTrader's own projection.
+    Fills are kept only when their client_order_id carries our "at-" prefix;
+    positions are kept only when their symbol is in db.owned_symbols() (or is a
+    symbol just seen in one of our own owned fills this sync). SOLE (default)
+    is byte-for-byte today's behavior."""
     snap = broker.get_account()
-    if snap.positions_loaded:
-        db.replace_positions(list(snap.positions))
-    else:
-        # Position query failed — snap.positions is an EMPTY placeholder, not
-        # broker truth. Replacing would wipe the projection with nothing.
-        logger.warning("ground_truth_sync: positions not loaded — projection kept as-is")
     fills = broker.reconcile_fills(since)
     if fills is None:
         logger.warning("ground_truth_sync: fills query failed — skipping fill projection")
         new = 0
     else:
+        if owned_only:
+            fills = [f for f in fills
+                     if f.client_order_id and f.client_order_id.startswith("at-")]
         new = db.record_fills(fills)
+    if snap.positions_loaded:
+        positions = list(snap.positions)
+        if owned_only:
+            owned = db.owned_symbols() | {f.symbol for f in (fills or [])
+                                          if f.client_order_id
+                                          and f.client_order_id.startswith("at-")}
+            positions = [p for p in positions if p.symbol in owned]
+        db.replace_positions(positions)
+    else:
+        # Position query failed — snap.positions is an EMPTY placeholder, not
+        # broker truth. Replacing would wipe the projection with nothing.
+        logger.warning("ground_truth_sync: positions not loaded — projection kept as-is")
     reconcile_open_orders(broker, db)
     logger.info("ground_truth_sync: %d position(s), %d new fill(s)",
                 len(snap.positions), new)
     return SyncResult(positions=len(snap.positions), new_fills=new)
+
+
+def cancel_tracked_orders(broker: Broker, db: DB) -> int:
+    """SHARED-mode cancel (V11): cancel only orders AutoTrader placed (present
+    in the trades projection). Foreign orders — e.g. the SNP bot's — are left
+    untouched. None book => logged no-op (same posture as cancel_all)."""
+    open_orders = broker.get_open_orders()
+    if open_orders is None:
+        logger.error("cancel_tracked: open-orders query failed — nothing cancelled")
+        return 0
+    cancelled = 0
+    for ack in open_orders:
+        boid = ack.broker_order_id
+        if not boid or db.get_trade_by_broker_order_id(boid) is None:
+            continue          # foreign or unidentifiable: not ours to cancel
+        try:
+            broker.cancel_order(boid)
+            cancelled += 1
+        except Exception as e:
+            logger.error("cancel_tracked: cancel %s failed: %s", boid, e)
+    logger.info("cancel_tracked: %d tracked order(s) cancelled", cancelled)
+    return cancelled
 
 
 def reconcile_open_orders(broker: Broker, db: DB) -> int:

@@ -54,6 +54,15 @@ class StopManager:
         held = {p.symbol: p.qty for p in snap.positions
                 if p.qty > 0 and not is_option_symbol(p.symbol)}
 
+        # SHARED (V11, C6): AutoTrader shares this paper account with an
+        # independent SNP bot. Every account-wide operation below scopes to
+        # ONLY our own tracked book — the SNP bot's orders/positions are never
+        # cancelled or stop-managed. SOLE (default) is unchanged.
+        shared = getattr(self._cfg, "account_ownership", "SOLE") == "SHARED"
+        if shared:
+            owned = self._db.owned_symbols()
+            held = {s: q for s, q in held.items() if s in owned}
+
         # Pass 1 — orphan sweep, BEFORE attaching (so a fresh stop is never
         # swept by its own reconcile): cancel every working order that is not
         # a recognized trailing stop protecting a held long.
@@ -63,6 +72,10 @@ class StopManager:
             if not boid:
                 continue
             row = self._db.get_trade_by_broker_order_id(boid)
+            if shared and row is None:
+                logger.info("stop reconcile: foreign order %s left untouched "
+                            "(SHARED ownership)", boid)
+                continue
             keep = (row is not None and row[2] == "TRAILING_STOP"
                     and row[1] == "SELL" and row[0] in held)
             if keep:

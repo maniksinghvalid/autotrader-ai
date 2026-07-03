@@ -34,7 +34,7 @@ class SessionRunner:
                  sleep: Callable[[float], None], loop_interval: float = 5.0,
                  signal_inbox=None, reporter=None, stop_manager=None,
                  trading_day_fn: Optional[Callable[[_date], bool]] = None,
-                 alerts=None):
+                 alerts=None, owned_only: bool = False):
         self._engine = engine
         self._broker = broker
         self._db = db
@@ -49,6 +49,9 @@ class SessionRunner:
         self._stop_manager = stop_manager
         self._trading_day_fn = trading_day_fn
         self._alerts = alerts
+        # V11/C6: SHARED-mode scoping — fills/positions ingestion is restricted
+        # to AutoTrader's own tracked book (see lifecycle.ground_truth_sync).
+        self._owned_only = owned_only
 
     def _fetch_account_for_perf(self, max_attempts: int = 4):
         """Fetch the account snapshot for the performance row, retrying with
@@ -99,7 +102,7 @@ class SessionRunner:
     def _run_job(self, job: str, now) -> None:
         if job == PRE_OPEN_SYNC:
             if self._broker is not None and self._db is not None:
-                ground_truth_sync(self._broker, self._db)
+                ground_truth_sync(self._broker, self._db, owned_only=self._owned_only)
         elif job == ENTRY_OPEN:
             self._gate.open()
             logger.info("ENTRY_OPEN: entries enabled")
@@ -120,7 +123,7 @@ class SessionRunner:
             # during this job — which skips RISK_SWEEP/EOD for the rest of the day — doesn't
             # leave the day's LAST performance row computed off stale/under-counted fills.
             if self._broker is not None and self._db is not None:
-                ground_truth_sync(self._broker, self._db)
+                ground_truth_sync(self._broker, self._db, owned_only=self._owned_only)
                 self._record_perf()
             # V3b: intraday stop backstop — any position whose entry-time stop
             # attach was unconfirmed (C2) is protected within hours, not next
@@ -131,7 +134,7 @@ class SessionRunner:
         elif job == RISK_SWEEP:
             self._gate.close()
             if self._broker is not None and self._db is not None:
-                ground_truth_sync(self._broker, self._db)
+                ground_truth_sync(self._broker, self._db, owned_only=self._owned_only)
                 self._record_perf()
             # V3b: intraday stop backstop — any position whose entry-time stop
             # attach was unconfirmed (C2) is protected within hours, not next
@@ -143,7 +146,7 @@ class SessionRunner:
         elif job == EOD_CANCEL_ORDERS:
             self._gate.close()
             if self._broker is not None:
-                self._broker.cancel_all()
+                self._engine.cancel_working_orders()
                 self._record_perf()
             logger.info("EOD_CANCEL_ORDERS: entries closed, working orders cancelled "
                         "(stops re-attach at next ENTRY_OPEN), performance committed")

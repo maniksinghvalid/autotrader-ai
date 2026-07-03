@@ -804,15 +804,32 @@ class TradeEngine:
 
     def _flatten_all(self, snapshot, round_id: str) -> None:
         """Liquidate every long position through the audited path. Called BEFORE
-        the halt flag is set, so the SELLs are not blocked by the halt guard."""
+        the halt flag is set, so the SELLs are not blocked by the halt guard.
+        SHARED (V11, C6): a position AutoTrader never traded (the SNP bot's) is
+        left alone — flatten only ever touches our own tracked book."""
         from autotrader.rebalance import RebalanceTrade
+        owned = None
+        if self._cfg.account_ownership == "SHARED" and self._db is not None:
+            owned = self._db.owned_symbols()
         for p in snapshot.positions:
             if p.qty <= 0:
+                continue
+            if owned is not None and p.symbol not in owned:
+                logger.info("flatten: foreign position %s left alone (SHARED)", p.symbol)
                 continue
             price = self._b.get_quote(p.symbol) or p.avg_price
             trade = RebalanceTrade(p.symbol, "SELL", p.qty, "TRIM", 0)
             res = self.submit_rebalance_order(trade, price, round_id)
             logger.info("flatten %s qty=%d -> %s", p.symbol, p.qty, res.action)
+
+    def cancel_working_orders(self) -> None:
+        """SOLE: whole-account cancel (today's behavior). SHARED: cancel only
+        our tracked orders — the SNP bot's book is not ours to sweep (C6)."""
+        if self._cfg.account_ownership == "SHARED" and self._db is not None:
+            from autotrader.lifecycle import cancel_tracked_orders
+            cancel_tracked_orders(self._b, self._db)
+        else:
+            self._b.cancel_all()
 
     def apply_risk_check(self, now) -> str:
         """Tiered intraday preservation. GATE: close entries, keep positions +
@@ -836,7 +853,7 @@ class TradeEngine:
             # liquidation SELLs must never be swept by our own cancel. On live
             # they fill async and must be left resting.
             try:
-                self._b.cancel_all()
+                self.cancel_working_orders()
             except Exception as e:
                 logger.error("RISK_CHECK halt: cancel_all failed: %s", e)
             self._flatten_all(snap, round_id)   # BEFORE halt flag (guard would block)
@@ -853,7 +870,7 @@ class TradeEngine:
         # a cancel failure is logged, never swallowed silently, and never masks
         # the real shutdown reason.
         try:
-            self._b.cancel_all()
+            self.cancel_working_orders()
             logger.info("shutdown: cancel_all completed")
         except Exception as e:
             logger.error("shutdown: cancel_all failed: %s", e)
@@ -934,9 +951,10 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
                           audit_path=audit, db=db, entry_gate=gate,
                           alert_url=slack_url,
                           strategy_enabled=strategy_enabled, breakout_ref=breakout_ref)
+    owned_only = cfg.account_ownership == "SHARED"
     watchdog = Watchdog(
         health_check=broker.heartbeat,
-        reconcile=lambda: ground_truth_sync(broker, db),
+        reconcile=lambda: ground_truth_sync(broker, db, owned_only=owned_only),
         sleep=time.sleep,
     )
     inbox = None
@@ -977,6 +995,7 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
         reporter=reporter,
         stop_manager=stop_manager,
         trading_day_fn=lambda d: is_trading_day(d, cfg.market_holidays),
+        owned_only=owned_only,
     )
 
     stopped = {"flag": False}
