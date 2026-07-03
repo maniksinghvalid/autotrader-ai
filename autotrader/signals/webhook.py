@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,43 +31,83 @@ _MAX_BODY_DEFAULT = 65536
 # 401s are written here (NOT the inbox root, so SignalInbox.poll() never consumes it).
 _AUTH_AUDIT_SUBDIR = "audit"
 _AUTH_AUDIT_FILE = "webhook-auth.jsonl"
+_AUDIT_MAX_BYTES_DEFAULT = 10_000_000
+
+# Bound on attacker-controlled audit fields (User-Agent/X-Forwarded-For) so an
+# anonymous caller can't grow the audit file by sending huge header values (V6a).
+_AUDIT_TRUNC = 256
+# In-memory, best-effort throttle on 401 audit writes: at most _AUDIT_MAX_PER_ADDR
+# records per remote_addr per _AUDIT_WINDOW_S seconds. Intentionally simple (no
+# persistence, no cross-process sharing) — this bounds disk-fill from a single
+# anonymous caller hammering the public URL, not a production rate-limiter (V6a).
+_AUDIT_WINDOW_S = 60.0
+_AUDIT_MAX_PER_ADDR = 10
 
 
-def _auth_failure_reason(secret: str, raw: bytes, token: Optional[str],
-                         signature: Optional[str]) -> Optional[str]:
+class _AuditThrottle:
+    def __init__(self):
+        self._hits: dict[str, list[float]] = {}
+
+    def allow(self, addr: str, now: float) -> bool:
+        hits = [t for t in self._hits.get(addr, []) if now - t < _AUDIT_WINDOW_S]
+        if len(hits) >= _AUDIT_MAX_PER_ADDR:
+            self._hits[addr] = hits
+            return False
+        hits.append(now)
+        self._hits[addr] = hits
+        return True
+
+
+def _auth_failure_reason(secret: str, token_secret: str, raw: bytes,
+                         token: Optional[str], signature: Optional[str]) -> Optional[str]:
     """Return None when authenticated, else a short category naming which check
     failed (for the audit log). Same constant-time comparisons as _verify; the
     category does not leak more than the eventual 401 already does."""
-    if not secret:
+    if not secret or not token_secret:
         return "server_secret_unset"
     if not token:
         return "missing_token"
     if not signature:
         return "missing_signature"
-    if not hmac.compare_digest(token, secret):
+    # Bytes compare: Flask/WSGI decodes headers latin-1, and str.compare_digest
+    # raises TypeError on non-ASCII str input. A non-ASCII header must resolve to
+    # an audited 401, never an unaudited TypeError -> 500 (V6a).
+    if not hmac.compare_digest(token.encode("utf-8", "replace"),
+                               token_secret.encode("utf-8")):
         return "token_mismatch"
     expected = "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(signature, expected):
+    if not hmac.compare_digest(signature.encode("utf-8", "replace"),
+                               expected.encode("utf-8")):
         return "bad_signature"
     return None
 
 
-def _verify(secret: str, raw: bytes, token: Optional[str], signature: Optional[str]) -> bool:
-    """Constant-time check: token must equal the secret AND signature must equal
-    'sha256=' + HMAC-SHA256(secret, raw_body). Empty secret => always reject."""
-    return _auth_failure_reason(secret, raw, token, signature) is None
+def _verify(secret: str, token_secret: str, raw: bytes, token: Optional[str],
+            signature: Optional[str]) -> bool:
+    """Constant-time check: token must equal the bearer secret AND signature must
+    equal 'sha256=' + HMAC-SHA256(signing secret, raw_body). Empty secret =>
+    always reject."""
+    return _auth_failure_reason(secret, token_secret, raw, token, signature) is None
 
 
-def _audit_auth_failure(inbox_dir: Path, record: dict) -> None:
+def _audit_auth_failure(inbox_dir: Path, record: dict,
+                        audit_max_bytes: int = _AUDIT_MAX_BYTES_DEFAULT) -> None:
     """Append one JSONL line (reason + caller metadata) for a rejected request to
     <inbox>/audit/webhook-auth.jsonl. Best-effort: an audit failure must NEVER
     break the security response, so errors are swallowed (logged only). Records
-    who/why — never the secret or the provided token/signature values."""
+    who/why — never the secret or the provided token/signature values. Skips the
+    write once the audit file exceeds audit_max_bytes, bounding disk usage from
+    an anonymous caller hammering the endpoint (V6a)."""
     try:
         audit_dir = inbox_dir / _AUTH_AUDIT_SUBDIR
         audit_dir.mkdir(parents=True, exist_ok=True)
+        audit_file = audit_dir / _AUTH_AUDIT_FILE
+        if audit_file.exists() and audit_file.stat().st_size > audit_max_bytes:
+            logger.warning("webhook auth audit file exceeds %d bytes; dropping record",
+                           audit_max_bytes)
+            return
         line = json.dumps(record, separators=(",", ":"), ensure_ascii=False)
-        with open(audit_dir / _AUTH_AUDIT_FILE, "a", encoding="utf-8") as f:
+        with open(audit_file, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except Exception as e:  # pragma: no cover — defensive; observability must not 500
         logger.error("failed to write webhook auth audit: %s", e)
@@ -102,10 +143,17 @@ def _quarantine(inbox_dir: Path, raw: bytes) -> Path:
     return _atomic_write(inbox_dir / "rejected", raw, "rej-")
 
 
-def create_app(inbox_dir: str, secret: str, max_body: int = _MAX_BODY_DEFAULT) -> Flask:
+def create_app(inbox_dir: str, secret: str, max_body: int = _MAX_BODY_DEFAULT,
+              token: Optional[str] = None,
+              audit_max_bytes: int = _AUDIT_MAX_BYTES_DEFAULT) -> Flask:
     app = Flask("autotrader-webhook")
     app.config["MAX_CONTENT_LENGTH"] = max_body  # Flask returns 413 past this
     inbox = Path(os.path.expanduser(inbox_dir))
+    token_secret = token or secret
+    if not token:
+        logger.warning("single-secret mode: token == signing key — "
+                       "set AUTOTRADER_WEBHOOK_TOKEN")
+    audit_throttle = _AuditThrottle()
 
     @app.get("/healthz")
     def healthz():
@@ -116,25 +164,28 @@ def create_app(inbox_dir: str, secret: str, max_body: int = _MAX_BODY_DEFAULT) -
         raw = request.get_data(cache=False)  # raw bytes — HMAC must match exactly
         token = request.headers.get("X-Webhook-Token")
         signature = request.headers.get("X-Webhook-Signature")
-        reason = _auth_failure_reason(secret, raw, token, signature)
+        reason = _auth_failure_reason(secret, token_secret, raw, token, signature)
         if reason is not None:
             # Persist who/why so a 401 is diagnosable from disk (terminal logs are
             # ephemeral). forwarded_for/user_agent identify the real caller behind
-            # the ngrok proxy (e.g. PostmanRuntime vs the cloud routine).
-            forwarded_for = request.headers.get("X-Forwarded-For")
-            user_agent = request.headers.get("User-Agent")
-            _audit_auth_failure(inbox, {
-                "ts": datetime.now(timezone.utc).isoformat(),
-                "event": "webhook_auth_failure",
-                "reason": reason,
-                "remote_addr": request.remote_addr,
-                "forwarded_for": forwarded_for,
-                "user_agent": user_agent,
-                "token_present": bool(token),
-                "signature_present": bool(signature),
-                "body_bytes": len(raw),
-                "path": request.path,
-            })
+            # the ngrok proxy (e.g. PostmanRuntime vs the cloud routine). Both are
+            # attacker-controlled, so truncate before persisting (V6a).
+            forwarded_for = (request.headers.get("X-Forwarded-For") or "")[:_AUDIT_TRUNC] or None
+            user_agent = (request.headers.get("User-Agent") or "")[:_AUDIT_TRUNC] or None
+            remote_addr = request.remote_addr or "?"
+            if audit_throttle.allow(remote_addr, time.monotonic()):
+                _audit_auth_failure(inbox, {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "event": "webhook_auth_failure",
+                    "reason": reason,
+                    "remote_addr": request.remote_addr,
+                    "forwarded_for": forwarded_for,
+                    "user_agent": user_agent,
+                    "token_present": bool(token),
+                    "signature_present": bool(signature),
+                    "body_bytes": len(raw),
+                    "path": request.path,
+                }, audit_max_bytes=audit_max_bytes)
             logger.warning("webhook auth failed (%s) from %s (xff=%s, ua=%s)",
                            reason, request.remote_addr, forwarded_for, user_agent)
             return jsonify({"error": "unauthorized"}), 401
@@ -179,6 +230,7 @@ def run() -> int:  # pragma: no cover — live entrypoint
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     inbox_dir = os.getenv("AUTOTRADER_SIGNAL_INBOX")
     secret = os.getenv("AUTOTRADER_WEBHOOK_SECRET", "")
+    token = os.getenv("AUTOTRADER_WEBHOOK_TOKEN") or None
     if not inbox_dir:
         logger.error("AUTOTRADER_SIGNAL_INBOX must be set (shared with the trader)")
         return 2
@@ -188,7 +240,7 @@ def run() -> int:  # pragma: no cover — live entrypoint
     host = os.getenv("AUTOTRADER_WEBHOOK_HOST", "127.0.0.1")
     port = int(os.getenv("AUTOTRADER_WEBHOOK_PORT", "8799"))
     max_body = int(os.getenv("AUTOTRADER_WEBHOOK_MAX_BODY", str(_MAX_BODY_DEFAULT)))
-    app = create_app(inbox_dir, secret, max_body)
+    app = create_app(inbox_dir, secret, max_body, token=token)
     logger.info("webhook on %s:%d -> inbox %s (localhost-only; expose via `ngrok http %d`)",
                 host, port, inbox_dir, port)
     app.run(host=host, port=port, debug=False, use_reloader=False)

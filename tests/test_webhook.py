@@ -203,6 +203,71 @@ def test_unsalvageable_payload_still_400s(tmp_path):
     assert len(list((inbox / "rejected").glob("*.json"))) == 1
 
 
+def _client_v6a(tmp_path, secret=_SECRET, token=None, max_body=65536,
+                audit_max_bytes=10_000_000):
+    app = create_app(str(tmp_path / "inbox"), secret, max_body=max_body,
+                     token=token, audit_max_bytes=audit_max_bytes)
+    app.config.update(TESTING=True)
+    return app.test_client(), tmp_path / "inbox"
+
+
+def test_non_ascii_token_is_401_not_500(tmp_path):
+    # Flask/WSGI decodes headers latin-1; hmac.compare_digest(str, str) raises
+    # TypeError on non-ASCII str, which today crashes with an unhandled 500
+    # before the audit write happens. A non-ASCII header must be a clean,
+    # audited 401 instead (V6a).
+    c, inbox = _client_v6a(tmp_path)
+    r = c.post("/webhook/sweep", data=b"{}",
+               headers={"X-Webhook-Token": "café", "X-Webhook-Signature": "x"})
+    assert r.status_code == 401
+    audit = inbox / "audit" / "webhook-auth.jsonl"
+    assert audit.exists() and "token_mismatch" in audit.read_text()
+
+
+def test_dual_secret_token_alone_cannot_forge(tmp_path):
+    # The bearer token (X-Webhook-Token) must be independent of the HMAC signing
+    # key: knowing the token alone (e.g. from ngrok's request inspector) must
+    # NOT be enough to forge a valid signature (V6a).
+    c, inbox = _client_v6a(tmp_path, secret="signing-key", token="bearer-token")
+    body = b'{"routine_id":"r1","timestamp":"2026-07-06T14:00:00Z","signal_changes":[]}'
+    # correct bearer token, but signature made with the TOKEN not the signing key
+    r = c.post("/webhook/sweep", data=body, headers={
+        "X-Webhook-Token": "bearer-token",
+        "X-Webhook-Signature": _sig(b"bearer-token", body)})
+    assert r.status_code == 401
+    r2 = c.post("/webhook/sweep", data=body, headers={
+        "X-Webhook-Token": "bearer-token",
+        "X-Webhook-Signature": _sig(b"signing-key", body)})
+    assert r2.status_code == 202
+
+
+def test_single_secret_mode_still_works_back_compat(tmp_path):
+    # token=None (or omitted) falls back to secret == token, matching pre-V6a
+    # callers that only pass (inbox_dir, secret).
+    c, inbox = _client_v6a(tmp_path)  # token defaults to None -> falls back to _SECRET
+    assert c.post("/webhook/sweep", data=_BODY, headers=_headers()).status_code == 202
+
+
+def test_audit_writes_are_bounded(tmp_path):
+    # Anonymous hammering from one address must not grow the audit file without
+    # bound: truncate attacker-controlled fields and throttle writes per-address
+    # (V6a).
+    c, inbox = _client_v6a(tmp_path)
+    for _ in range(50):   # anonymous hammering from one address
+        c.post("/webhook/sweep", data=b"x", headers={"User-Agent": "A" * 10000})
+    lines = (inbox / "audit" / "webhook-auth.jsonl").read_text().splitlines()
+    assert len(lines) <= 10                      # per-IP throttle
+    assert all(len(json.loads(l).get("user_agent") or "") <= 256 for l in lines)
+
+
+def test_audit_write_skipped_once_file_exceeds_max_bytes(tmp_path):
+    c, inbox = _client_v6a(tmp_path, audit_max_bytes=10)  # tiny cap
+    c.post("/webhook/sweep", data=b"x")  # first write goes through (file didn't exist yet)
+    c.post("/webhook/sweep", data=b"x")  # file now over cap -> second write skipped
+    lines = (inbox / "audit" / "webhook-auth.jsonl").read_text().splitlines()
+    assert len(lines) == 1
+
+
 def test_webhook_module_does_not_import_moomoo_sdk():
     code = ("import importlib, sys\n"
             "importlib.import_module('autotrader.signals.webhook')\n"
