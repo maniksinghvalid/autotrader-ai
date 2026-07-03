@@ -836,8 +836,9 @@ class TradeEngine:
 
     def apply_risk_check(self, now) -> str:
         """Tiered intraday preservation. GATE: close entries, keep positions +
-        stops. HALT: flatten all, cancel all, record the halt, set the session
-        halt flag. Returns the RiskAction name."""
+        stops. HALT: cancel all working orders, then flatten all positions,
+        record the halt, set the session halt flag. Returns the RiskAction
+        name."""
         snap = self._b.get_account()
         action = risk_evaluate(snap, self._cfg)
         # W7: performance rows are written ONLY by SessionRunner._record_perf

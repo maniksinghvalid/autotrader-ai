@@ -62,6 +62,18 @@ Promotion criteria ("clean session," dry-run procedure) live in `CUTOVER.md`
       `tests/test_day_pnl_fail_closed.py`, `tests/test_durable_halt.py`,
       `tests/test_halt_flatten_order.py`, `tests/test_unrealized_gate.py`,
       `tests/test_unrealized_snapshot.py`.
+      **Known gap (fail-open, not fail-closed):** unlike `day_pnl_known`'s
+      fail-closed guarantee for the realized-P&L HALT, `unrealized_pnl` has
+      no equivalent `unrealized_pnl_known` flag — it comes from
+      `safe_float(..., default=0.0)` over the broker's `unrealized_pl` field.
+      If `RISK_UNREALIZED_LOSS_GATE` is enabled and the broker ever stops
+      reporting `unrealized_pl` (an API-shape-change scenario), the computed
+      `unrealized_pnl` silently becomes `0.0` and the gate never trips — it
+      fails open (silently stops protecting) rather than blocking entries.
+      Bounded impact: this only affects the optional, default-off,
+      entry-blocking-only unrealized gate; the primary realized-loss HALT
+      is unaffected and still fails closed. No code change is planned here;
+      this is a documented pre-live awareness item.
 - [x] **V5 — Order-status & escalation safety (Stage-1 code; full exposure at
       Stage 3).** Escalation's cancel step confirms the order left the book
       (bounded poll) before advancing — `RET_OK` on a cancel request no

@@ -45,6 +45,14 @@ Before touching any config:
       (risk-limit changes need human review — do not leave a probe value in
       `config/risk.config`).
 
+**Knob to double-check, not a new box:** if `RISK_UNREALIZED_LOSS_GATE=true`,
+know that it fails *open*, not closed — `unrealized_pnl` is read via
+`safe_float(..., default=0.0)`, so if the broker ever stops reporting
+`unrealized_pl` the gate silently stops protecting rather than blocking
+entries. This is not the same fail-closed guarantee `day_pnl_known` gives the
+realized-loss HALT (see `PRE-LIVE.md` V4). Bounded: the realized-loss HALT is
+unaffected either way.
+
 Do not proceed past this section until all four boxes are checked by a human,
 not inferred from "the code looks right."
 
@@ -258,9 +266,11 @@ before counting it.
 
 ## 7. SNP-bot coexistence check
 
-AutoTrader shares its Moomoo account and OpenD instance with an independent
-process — the SNP trading bot (`com.bot.trading`, a separate repo, not part
-of this codebase). Post-flip, for at least the first live session:
+AutoTrader shares its Moomoo OpenD login/gateway (and, pre-flip, the SIMULATE
+paper sub-account) with an independent process — the SNP trading bot
+(`com.bot.trading`, a separate repo, not part of this codebase). It does
+**not** share the LIVE account — see the account-id check below. Post-flip,
+for at least the first live session:
 
 - Confirm **both** processes are healthy: `launchctl list | grep com.bot`
   and `launchctl list | grep com.autotrader` both show a live PID with a

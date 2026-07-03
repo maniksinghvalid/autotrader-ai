@@ -71,10 +71,19 @@ def ground_truth_sync(broker: Broker, db: DB, since: Optional[str] = None,
             owned = db.owned_symbols() | {f.symbol for f in owned_fills}
             positions = [p for p in snap.positions if p.symbol in owned]
             db.replace_positions(positions)
+            owned_positions_count = len(positions)
         else:
             # Position query failed — snap.positions is an EMPTY placeholder, not
             # broker truth. Replacing would wipe the projection with nothing.
             logger.warning("ground_truth_sync: positions not loaded — projection kept as-is")
+            owned_positions_count = 0
+        reconcile_open_orders(broker, db)
+        # owned_only mode: report the filtered/owned count actually written to
+        # the DB, not len(snap.positions) — that unfiltered broker count
+        # includes foreign (e.g. SNP bot) positions never ingested here.
+        logger.info("ground_truth_sync: %d position(s), %d new fill(s)",
+                    owned_positions_count, new)
+        return SyncResult(positions=owned_positions_count, new_fills=new)
     reconcile_open_orders(broker, db)
     logger.info("ground_truth_sync: %d position(s), %d new fill(s)",
                 len(snap.positions), new)
