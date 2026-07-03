@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
+from autotrader import books
 from autotrader.broker import Broker
 from autotrader.config import RiskConfig, load_risk_config
 from autotrader.domain import BrokerError, OrderRequest, OrderState, Signal
@@ -168,7 +169,7 @@ class TradeEngine:
         # re-fetch fresh so the risk core sees current positions/exposure.
         self._snap_cache = None
         snap = self._b.get_account()
-        return self._route_signal(signal, snap, price)
+        return self._route_signal(signal, snap, price, origin=books.ORIGIN_BREAKOUT)
 
     def submit_external_signal(self, signal: Signal) -> TickResult:
         """Route a validated external signal through the SAME pipeline as a
@@ -242,7 +243,19 @@ class TradeEngine:
         self._snap_cache_left -= 1
         return self._snap_cache
 
-    def _route_signal(self, signal: Signal, snap, price: float) -> TickResult:
+    def _route_signal(self, signal: Signal, snap, price: float,
+                      origin: str = "EXTERNAL") -> TickResult:
+        # Book segregation (spec D3): an EXTERNAL signal (AI/rebalance book) must
+        # not act on a symbol the internal BREAKOUT book owns — for BUY or SELL.
+        # Placed before overlay dispatch so external overlays are covered too
+        # (all overlay routing flows through here). BREAKOUT origin owns the
+        # symbol and is never blocked.
+        if origin != books.ORIGIN_BREAKOUT and self._db is not None:
+            if books.is_breakout_claimed(signal.symbol, self._db.get_claims()):
+                logger.info("book conflict: %s %s skipped — breakout-owned",
+                            signal.direction, signal.symbol)
+                return TickResult(books.SKIP_BOOK_CONFLICT, signal.symbol)
+
         if signal.confidence < self._cfg.min_confidence:
             return TickResult("DROPPED_LOW_CONFIDENCE", f"{signal.confidence}")
 
