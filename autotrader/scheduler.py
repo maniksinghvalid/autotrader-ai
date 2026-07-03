@@ -1,8 +1,13 @@
 """Deterministic EST lifecycle scheduler — Gemini's four daily crons, made
-testable. poll(now) returns the job names that have become due since the last
-poll, in chronological order, firing each at most once per calendar day. A
-late start catches up all past-due jobs on the first poll (so the pre-open
-sync still runs if the process started after 08:30)."""
+testable. poll(now) returns the job names that are due and not yet marked
+fired today, in chronological order. A late start catches up all past-due
+jobs on the first poll (so the pre-open sync still runs if the process
+started after 08:30).
+
+poll() does NOT mark jobs as fired (C1 fix): callers must call
+mark_fired(name, now) once a job actually SUCCEEDS. This lets a raising job
+be retried on the next poll without re-marking, and keeps one job's failure
+from silently consuming the rest of the due batch."""
 from __future__ import annotations
 
 from datetime import datetime, time
@@ -56,12 +61,15 @@ class LifecycleScheduler:
         return None
 
     def poll(self, now: datetime) -> List[str]:
+        """Jobs due and not yet fired today. Does NOT mark — callers call
+        mark_fired(name, now) after the job SUCCEEDS (C1: a failed job must
+        retry next poll, and one failure must not consume the batch)."""
         today = now.date().isoformat()
-        due: List[str] = []
-        for name, sched in _SCHEDULE:
-            if now.time() >= sched and self._last(name) != today:
-                self._last_fired[name] = today
-                if name in AT_MOST_ONCE and self._state_set is not None:
-                    self._state_set(f"sched:{name}", today)
-                due.append(name)
-        return due
+        return [name for name, sched in _SCHEDULE
+                if now.time() >= sched and self._last(name) != today]
+
+    def mark_fired(self, name: str, now: datetime) -> None:
+        today = now.date().isoformat()
+        self._last_fired[name] = today
+        if name in AT_MOST_ONCE and self._state_set is not None:
+            self._state_set(f"sched:{name}", today)

@@ -33,7 +33,8 @@ class SessionRunner:
                  scheduler: LifecycleScheduler, watchdog, clock: Clock,
                  sleep: Callable[[float], None], loop_interval: float = 5.0,
                  signal_inbox=None, reporter=None, stop_manager=None,
-                 trading_day_fn: Optional[Callable[[_date], bool]] = None):
+                 trading_day_fn: Optional[Callable[[_date], bool]] = None,
+                 alerts=None):
         self._engine = engine
         self._broker = broker
         self._db = db
@@ -47,6 +48,7 @@ class SessionRunner:
         self._reporter = reporter
         self._stop_manager = stop_manager
         self._trading_day_fn = trading_day_fn
+        self._alerts = alerts
 
     def _fetch_account_for_perf(self, max_attempts: int = 4):
         """Fetch the account snapshot for the performance row, retrying with
@@ -148,7 +150,16 @@ class SessionRunner:
         if self._trading_day_fn is not None and not self._trading_day_fn(now.date()):
             return "NON_TRADING_DAY"
         for job in self._sched.poll(now):
-            self._run_job(job, now)
+            try:
+                self._run_job(job, now)
+            except Exception as e:
+                logger.error("lifecycle job %s failed: %s", job, e, exc_info=True)
+                if self._alerts is not None:
+                    self._alerts.send(
+                        f"⚠ lifecycle job {job} FAILED: {e} — will retry next poll",
+                        key=f"job-fail:{job}:{now.date().isoformat()}")
+                continue     # later due jobs still run; this one retries next poll
+            self._sched.mark_fired(job, now)
         if self._gate is not None and self._gate.halted:
             return "HALTED"
         if not self._watch.ensure_healthy():
