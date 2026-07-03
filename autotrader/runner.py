@@ -105,8 +105,10 @@ class SessionRunner:
             logger.info("ENTRY_OPEN: entries enabled")
             # W1: reconcile protective stops FIRST (EOD cancelled them; DAY TIF
             # would have lapsed them anyway), then replay deferred entries —
-            # whose own stops attach at entry.
-            if self._stop_manager is not None:
+            # whose own stops attach at entry. Skipped when halted: a flattened
+            # book needs no stops.
+            if (self._stop_manager is not None
+                    and not (self._gate is not None and self._gate.halted)):
                 self._stop_manager.reconcile(now.date())
             # Replay any external BUYs that arrived pre-market (deferred, not dropped)
             # now that the window is open — routed against a fresh snapshot/quote.
@@ -122,11 +124,23 @@ class SessionRunner:
             if self._broker is not None and self._db is not None:
                 ground_truth_sync(self._broker, self._db)
                 self._record_perf()
+            # V3b: intraday stop backstop — any position whose entry-time stop
+            # attach was unconfirmed (C2) is protected within hours, not next
+            # morning. Skipped when halted: a flattened book needs no stops.
+            if (self._stop_manager is not None
+                    and not (self._gate is not None and self._gate.halted)):
+                self._stop_manager.reconcile(now.date())
         elif job == RISK_SWEEP:
             self._gate.close()
             if self._broker is not None and self._db is not None:
                 ground_truth_sync(self._broker, self._db)
                 self._record_perf()
+            # V3b: intraday stop backstop — any position whose entry-time stop
+            # attach was unconfirmed (C2) is protected within hours, not next
+            # morning. Skipped when halted: a flattened book needs no stops.
+            if (self._stop_manager is not None
+                    and not (self._gate is not None and self._gate.halted)):
+                self._stop_manager.reconcile(now.date())
             logger.info("RISK_SWEEP: entries closed, ground truth + performance recorded")
         elif job == EOD_CANCEL_ORDERS:
             self._gate.close()
