@@ -52,6 +52,10 @@ class SessionRunner:
         # V11/C6: SHARED-mode scoping — fills/positions ingestion is restricted
         # to AutoTrader's own tracked book (see lifecycle.ground_truth_sync).
         self._owned_only = owned_only
+        # V8b: tracks whether we are mid-episode of watchdog exhaustion, so the
+        # alert (and db.record_halt) fires ONCE per episode, not every 5s
+        # iteration while unhealthy.
+        self._unhealthy_episode = False
 
     def _fetch_account_for_perf(self, max_attempts: int = 4):
         """Fetch the account snapshot for the performance row, retrying with
@@ -147,6 +151,8 @@ class SessionRunner:
             self._gate.close()
             if self._broker is not None:
                 self._engine.cancel_working_orders()
+                if self._db is not None:   # I6: late fills (15:30-16:30) must land
+                    ground_truth_sync(self._broker, self._db, owned_only=self._owned_only)
                 self._record_perf()
             logger.info("EOD_CANCEL_ORDERS: entries closed, working orders cancelled "
                         "(stops re-attach at next ENTRY_OPEN), performance committed")
@@ -178,7 +184,21 @@ class SessionRunner:
         if self._gate is not None and self._gate.halted:
             return "HALTED"
         if not self._watch.ensure_healthy():
+            if not self._unhealthy_episode:
+                self._unhealthy_episode = True
+                logger.error("watchdog exhausted — connection not restored")
+                if self._alerts is not None:
+                    self._alerts.send(
+                        "⚠ TRADER UNHEALTHY — watchdog could not restore the "
+                        "OpenD connection; loop is idling. Check OpenD.",
+                        key="watchdog-unhealthy")
+                if self._db is not None:
+                    self._db.record_halt("watchdog unhealthy: connection not restored")
             return "HALTED_UNHEALTHY"
+        if self._unhealthy_episode:
+            self._unhealthy_episode = False
+            if self._alerts is not None:
+                self._alerts.reset("watchdog-unhealthy")
         action = self._engine.tick().action
         if self._inbox is not None:
             for sig in self._inbox.poll():
@@ -188,11 +208,20 @@ class SessionRunner:
 
     def run(self, stop: Callable[[], bool]) -> None:
         logger.info("SessionRunner started (loop_interval=%.1fs)", self._loop_interval)
+        errors = 0
         while not stop():
             try:
                 action = self.run_once(self._clock.now_est())
                 logger.debug("run_once -> %s", action)
+                errors = 0
+                if self._alerts is not None:
+                    self._alerts.reset("loop-errors")
             except Exception as e:  # never let one bad iteration kill the session
-                logger.error("run_once error: %s", e)
+                errors += 1
+                logger.error("run_once error: %s", e, exc_info=True)
+                if errors >= 5 and self._alerts is not None:
+                    self._alerts.send(
+                        f"⚠ TRADER DEGRADED — {errors} consecutive loop errors; "
+                        f"latest: {e}", key="loop-errors")
             self._sleep(self._loop_interval)
         logger.info("SessionRunner stopped")

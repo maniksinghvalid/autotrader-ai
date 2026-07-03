@@ -22,6 +22,7 @@ from autotrader.strategies.threshold import ThresholdStrategy
 from autotrader.watchdog import backoff_seconds
 
 if TYPE_CHECKING:
+    from autotrader.alerts import AlertSink
     from autotrader.db import DB
     from autotrader.lifecycle import EntryGate
 
@@ -72,7 +73,8 @@ class TradeEngine:
                  escalation_sleep=None,
                  alert_url: "Optional[str]" = None, alert_post=None,
                  session_id: "Optional[str]" = None, snapshot_cache_ticks: int = 1,
-                 strategy_enabled: bool = True, breakout_ref=None):
+                 strategy_enabled: bool = True, breakout_ref=None,
+                 alerts: "Optional[AlertSink]" = None):
         self._b = broker
         self._strat = strategy
         self._strategy_enabled = strategy_enabled
@@ -110,6 +112,7 @@ class TradeEngine:
         self._escalation_sleep = escalation_sleep or (lambda _s: None)
         self._alert_url = alert_url
         self._alert_post = alert_post
+        self._alerts = alerts
         # External BUY signals that arrived while the entry window was closed
         # (e.g. a routine that fires pre-market). Held here rather than dropped —
         # the inbox consumes each drop once, so a dropped BUY is lost forever —
@@ -862,6 +865,11 @@ class TradeEngine:
             if self._db:
                 self._db.record_halt(reason)
                 self._db.set_state(f"halt:{now.date().isoformat()}", reason)
+            if self._alerts is not None:
+                self._alerts.send(
+                    f"🛑 HARD HALT — {reason}. Book flattened (owned positions), "
+                    f"orders cancelled, trading halted for the day.",
+                    key=f"halt:{now.date().isoformat()}")
             logger.error("RISK_CHECK HARD breach: flattened + halted (%s)", reason)
         return action.value
 
@@ -879,7 +887,8 @@ class TradeEngine:
 
 def build_engine(broker, strategy, cfg, *, order_qty: int, audit_path: str,
                  db=None, entry_gate=None, alert_url=None,
-                 strategy_enabled: bool = True, breakout_ref=None) -> TradeEngine:
+                 strategy_enabled: bool = True, breakout_ref=None,
+                 alerts=None) -> TradeEngine:
     """Production TradeEngine wiring — the ONE place real time enters the
     engine: time.sleep for the hedge fill-poll and the escalation dwell (unit
     tests inject no-ops/recorders through the ctor instead), and the snapshot
@@ -895,6 +904,7 @@ def build_engine(broker, strategy, cfg, *, order_qty: int, audit_path: str,
         hedge_confirm_sleep=_time.sleep,
         escalation_sleep=_time.sleep,
         snapshot_cache_ticks=int(_os.getenv("AUTOTRADER_SNAPSHOT_CACHE_TICKS", "6")),
+        alerts=alerts,
     )
 
 
@@ -946,11 +956,14 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
     gate = EntryGate(enabled=False)  # entries open at 09:45 via the scheduler
     restore_session_halt(gate, db, date.today())  # V4c: halted day survives restart
     slack_url = os.getenv("AUTOTRADER_SLACK_WEBHOOK_URL")
+    from autotrader.alerts import AlertSink
+    alerts = AlertSink(slack_url)
     engine = build_engine(broker, strat, cfg,
                           order_qty=int(os.getenv("ORDER_QTY", "1")),
                           audit_path=audit, db=db, entry_gate=gate,
                           alert_url=slack_url,
-                          strategy_enabled=strategy_enabled, breakout_ref=breakout_ref)
+                          strategy_enabled=strategy_enabled, breakout_ref=breakout_ref,
+                          alerts=alerts)
     owned_only = cfg.account_ownership == "SHARED"
     watchdog = Watchdog(
         health_check=broker.heartbeat,
@@ -996,6 +1009,7 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
         stop_manager=stop_manager,
         trading_day_fn=lambda d: is_trading_day(d, cfg.market_holidays),
         owned_only=owned_only,
+        alerts=alerts,
     )
 
     stopped = {"flag": False}
