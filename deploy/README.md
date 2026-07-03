@@ -36,6 +36,13 @@ before loading it.**
    sourced by the plist's wrapper shell at process start — nothing secret or
    risk-related lives in the plists themselves.
 
+   > **`FUTU_ACC_ID`:** RUNBOOK.md §3/§4 has you `export FUTU_ACC_ID=...` by
+   > hand in an interactive shell. A launchd-supervised process has no such
+   > shell, so add `FUTU_ACC_ID=<your SIMULATE acc_id>` as its own line in
+   > `config/secure.config` (gitignored, sourced by the wrapper) instead —
+   > otherwise `common.get_default_acc_id()` falls back to `0`, which is not
+   > what you want running unattended.
+
 2. Create the log directory (launchd will create the log *files* but not
    missing parent directories):
 
