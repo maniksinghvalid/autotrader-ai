@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,7 +40,7 @@ def atomic_write_bytes(inbox_dir: Path, raw: bytes) -> Path:
     except Exception:
         os.unlink(tmp)
         raise
-    final = inbox_dir / f"drop-{uuid.uuid4().hex}.json"
+    final = inbox_dir / f"{time.time_ns():020d}-drop-{uuid.uuid4().hex}.json"
     os.replace(tmp, final)  # atomic on POSIX
     return final
 
@@ -88,10 +89,20 @@ class SignalInbox:
                     path.replace(self._rejected / path.name)
                     continue
                 if payload.portfolio_targets and self._on_targets is not None:
-                    self._on_targets(
-                        payload.timestamp.date().isoformat(),
-                        [(t.symbol.upper(), float(t.score))
-                         for t in payload.portfolio_targets])
+                    as_of = min(payload.timestamp.date(), self._now().date())
+                    if as_of != payload.timestamp.date():
+                        logger.warning("targets payload %s dated in the FUTURE "
+                                       "(%s) — clamped to %s", path.name,
+                                       payload.timestamp.date(), as_of)
+                    try:
+                        self._on_targets(
+                            as_of.isoformat(),
+                            [(t.symbol.upper(), float(t.score))
+                             for t in payload.portfolio_targets])
+                    except Exception as e:   # targets are ADVISORY: a failing
+                        # sink (sqlite locked/full) must not wedge signal flow.
+                        logger.error("targets ingestion failed for %s: %s — "
+                                     "signals still routed", path.name, e)
                 signals.extend(normalize_payload(payload, self._scale))
             except (ValidationError, ValueError, OSError) as e:
                 logger.warning("rejected signal file %s: %s", path.name, e)

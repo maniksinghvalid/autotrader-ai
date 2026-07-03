@@ -126,7 +126,7 @@ def _atomic_write(dest_dir: Path, raw: bytes, prefix: str) -> Path:
     except Exception:
         os.unlink(tmp)
         raise
-    final = dest_dir / f"{prefix}{uuid.uuid4().hex}.json"
+    final = dest_dir / f"{time.time_ns():020d}-{prefix}{uuid.uuid4().hex}.json"
     os.replace(tmp, final)  # atomic on POSIX
     return final
 
