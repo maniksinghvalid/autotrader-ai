@@ -921,6 +921,22 @@ class TradeEngine:
             logger.error("RISK_CHECK HARD breach: flattened + halted (%s)", reason)
         return action.value
 
+    def reconcile_claims(self) -> int:
+        """Release any breakout claim whose symbol is no longer held (qty>0) per
+        the positions projection. Self-heals claims left dangling by a broker-side
+        stop fire, halt-flatten, manual close, or a missed inline release. Called
+        after each ground-truth sync. No-op (returns 0) without a DB."""
+        if self._db is None:
+            return 0
+        held = self._db.held_symbols()
+        released = 0
+        for symbol in list(self._db.get_claims()):
+            if symbol not in held:
+                self._db.release_claim(symbol)
+                logger.info("claim released: %s no longer held (reconcile)", symbol)
+                released += 1
+        return released
+
     def shutdown(self) -> None:
         # Cancel-on-shutdown (CLAUDE.md). Best-effort flatten of working orders:
         # a cancel failure is logged, never swallowed silently, and never masks

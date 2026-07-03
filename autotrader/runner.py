@@ -115,6 +115,8 @@ class SessionRunner:
         if job == PRE_OPEN_SYNC:
             if self._broker is not None and self._db is not None:
                 ground_truth_sync(self._broker, self._db, owned_only=self._owned_only)
+                if self._engine is not None:
+                    self._engine.reconcile_claims()
         elif job == ENTRY_OPEN:
             self._gate.open()
             logger.info("ENTRY_OPEN: entries enabled")
@@ -136,6 +138,7 @@ class SessionRunner:
             # leave the day's LAST performance row computed off stale/under-counted fills.
             if self._broker is not None and self._db is not None:
                 ground_truth_sync(self._broker, self._db, owned_only=self._owned_only)
+                self._engine.reconcile_claims()
                 self._record_perf()
             # V3b: intraday stop backstop — any position whose entry-time stop
             # attach was unconfirmed (C2) is protected within hours, not next
@@ -147,6 +150,7 @@ class SessionRunner:
             self._gate.close()
             if self._broker is not None and self._db is not None:
                 ground_truth_sync(self._broker, self._db, owned_only=self._owned_only)
+                self._engine.reconcile_claims()
                 self._record_perf()
             # V3b: intraday stop backstop — any position whose entry-time stop
             # attach was unconfirmed (C2) is protected within hours, not next

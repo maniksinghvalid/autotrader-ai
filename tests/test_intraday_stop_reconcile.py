@@ -22,6 +22,8 @@ class _Engine:
         pass
     def rebalance(self, now):
         pass
+    def reconcile_claims(self):
+        return 0
 
 
 class _Watch:
