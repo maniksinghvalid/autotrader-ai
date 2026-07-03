@@ -6,6 +6,7 @@ rather than constructing a trade context directly, so env checks aren't bypassed
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 from typing import List, Optional
@@ -336,7 +337,14 @@ class MoomooBroker(Broker):
             raise BrokerError(BrokerErrorKind.UNKNOWN, f"accinfo failed: {acc}")
         cash = self._c.safe_float(self._c.safe_get(acc.iloc[0], "cash", "avl_withdrawal_cash", default=0))
         total = self._c.safe_float(self._c.safe_get(acc.iloc[0], "total_assets", default=0))
-        pnl = self._c.safe_float(self._c.safe_get(acc.iloc[0], "realized_pl", "today_pnl_value", default=0))
+        pnl_raw = self._c.safe_get(acc.iloc[0], "realized_pl", "today_pnl_value",
+                                   default=None)
+        pnl = self._c.safe_float(pnl_raw) if pnl_raw is not None else 0.0
+        day_pnl_known = pnl_raw is not None and math.isfinite(pnl)
+        if not day_pnl_known:
+            pnl = 0.0
+            logger.warning("get_account: no realized_pl/today_pnl_value field — "
+                           "day_pnl UNKNOWN (risk check will fail closed)")
         upnl = self._c.safe_float(self._c.safe_get(acc.iloc[0], "unrealized_pl", default=0))
         positions = self._positions()
         if positions is None:
@@ -344,11 +352,13 @@ class MoomooBroker(Broker):
             # risk core would trust. Mark stale AND not-loaded (E1/R7).
             return AccountSnapshot(cash=cash, total_assets=total, day_pnl=pnl,
                                    stale=True, positions_loaded=False,
+                                   day_pnl_known=day_pnl_known,
                                    unrealized_pnl=upnl, positions=())
         # A genuinely empty account with zero assets is also treated as stale.
         stale = (total == 0 and not positions)
         return AccountSnapshot(cash=cash, total_assets=total, day_pnl=pnl,
                                stale=stale, positions_loaded=True,
+                               day_pnl_known=day_pnl_known,
                                unrealized_pnl=upnl, positions=tuple(positions))
 
     def _positions(self) -> Optional[List[Position]]:

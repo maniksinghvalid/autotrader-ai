@@ -179,6 +179,7 @@ class AccountSnapshot:
     day_pnl: float
     stale: bool
     positions_loaded: bool = True   # False = position query FAILED (not flat)
+    day_pnl_known: bool = True   # False = broker returned no P&L field: fail CLOSED
     unrealized_pnl: float = 0.0
     positions: Tuple[Position, ...] = ()
 

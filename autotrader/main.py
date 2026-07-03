@@ -816,8 +816,9 @@ class TradeEngine:
         if action is RiskAction.GATE:
             if self._gate is not None:
                 self._gate.close()
-            logger.warning("RISK_CHECK soft breach: entries closed (pnl=%.2f)",
-                           snap.day_pnl)
+            why = "day_pnl UNKNOWN (fail closed)" if not snap.day_pnl_known \
+                else f"pnl={snap.day_pnl:.2f}"
+            logger.warning("RISK_CHECK soft breach: entries closed (%s)", why)
         elif action is RiskAction.HALT:
             reason = f"daily loss halt: pnl={snap.day_pnl}"
             round_id = f"halt-{now.date().isoformat()}"

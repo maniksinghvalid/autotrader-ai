@@ -16,6 +16,10 @@ class RiskAction(enum.Enum):
 
 
 def evaluate(snapshot: AccountSnapshot, cfg: RiskConfig) -> RiskAction:
+    if not snapshot.day_pnl_known:
+        # Broker returned no P&L field. Unknown loss must never read as "no
+        # loss": block new entries, keep positions + stops, never flatten.
+        return RiskAction.GATE
     if snapshot.day_pnl <= -abs(cfg.daily_loss_halt):
         return RiskAction.HALT
     if snapshot.day_pnl <= -abs(cfg.daily_loss_limit):
