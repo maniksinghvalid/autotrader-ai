@@ -22,3 +22,8 @@ env/
 
 # Claude Code local session state
 .remember/
+
+# Session scratch (not referenced by committed docs)
+plan/
+state.md
+docs/routinesignal-options.json
