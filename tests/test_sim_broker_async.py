@@ -47,3 +47,53 @@ def test_cancel_before_fill_matures_kills_order():
     assert not any(o.client_order_id == "c1" for o in b.get_open_orders())
     b.tick_market(); b.tick_market()
     assert b.get_account().position_qty("US.TEST") == 0    # never fills
+
+
+def test_cancel_all_purges_pending_async_state():
+    # Verify that cancel_all() clears _pending_fills and _pending_cancels,
+    # so a matured tick after cancel_all() never materializes a fill.
+    b = SimBroker({"US.TEST": 100.0}, fill_latency_ticks=2)
+    initial_cash = b.get_account().cash
+    ack = b.place_order(_buy())
+    assert ack.state is OrderState.SUBMITTED
+    assert any(o.client_order_id == "c1" for o in b.get_open_orders())
+    assert b.get_account().cash == initial_cash  # not filled yet
+    b.cancel_all()
+    assert not any(o.client_order_id == "c1" for o in b.get_open_orders())
+    # Two tick_market() calls should NOT fill the order
+    b.tick_market()
+    assert b.get_account().position_qty("US.TEST") == 0
+    assert b.get_account().cash == initial_cash  # cash unchanged
+    b.tick_market()
+    assert b.get_account().position_qty("US.TEST") == 0
+    assert b.get_account().cash == initial_cash  # cash still unchanged
+    assert len(b.reconcile_fills(None)) == 0     # no fills at all
+
+
+def test_async_marketable_limit_fills_at_limit_price():
+    # Verify marketable LIMIT orders route through async path and fill at limit_price.
+    # With spread_bps=100 (1%), ref=100: bid=99.5, ask=100.5.
+    # A BUY limit at 100.5 is marketable (>= ask).
+    b = SimBroker({"US.TEST": 100.0}, fill_latency_ticks=2, spread_bps=100.0)
+    bid, ask = b.get_touch("US.TEST")
+    assert bid < 100.0 < ask  # verify spread is present
+    limit_price = ask  # exactly at the ask, definitely marketable
+    req = OrderRequest(symbol="US.TEST", side="BUY", qty=10,
+                       order_type="LIMIT", limit_price=limit_price,
+                       client_order_id="limit1")
+    ack = b.place_order(req)
+    assert ack.state is OrderState.SUBMITTED
+    assert any(o.client_order_id == "limit1" for o in b.get_open_orders())
+    initial_cash = b.get_account().cash
+    b.tick_market()
+    assert any(o.client_order_id == "limit1" for o in b.get_open_orders())  # still pending
+    b.tick_market()
+    assert not any(o.client_order_id == "limit1" for o in b.get_open_orders())
+    # Verify it filled at the limit price, not at the market ask
+    fills = b.reconcile_fills(None)
+    assert len(fills) == 1
+    assert fills[0].price == limit_price
+    assert fills[0].qty == 10
+    assert b.get_account().position_qty("US.TEST") == 10
+    expected_cash = initial_cash - (10 * limit_price)
+    assert b.get_account().cash == expected_cash

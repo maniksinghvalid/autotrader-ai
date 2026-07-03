@@ -110,14 +110,7 @@ class SimBroker(Broker):
             self._acks_by_cid[req.client_order_id] = ack
             return ack
         if not rests:
-            signed = req.qty if req.side == "BUY" else -req.qty
-            self._cash -= signed * price
-            prev = self._positions.get(req.symbol)
-            new_qty = (prev.qty if prev else 0) + signed
-            self._positions[req.symbol] = Position(req.symbol, new_qty, price)
-            self._fills.append(Fill(fill_id=f"fill-{self._seq}", symbol=req.symbol,
-                                    side=req.side, qty=req.qty, price=price,
-                                    ts=f"t{self._seq}"))
+            self._apply_fill(req, price, self._seq)
             ack = OrderAck(req.client_order_id, boid, OrderState.FILLED, {})
         else:
             ack = OrderAck(req.client_order_id, boid, OrderState.SUBMITTED, {})
@@ -144,15 +137,8 @@ class SimBroker(Broker):
             if entry["left"] > 0:
                 continue
             req, price = entry["req"], entry["price"]
-            signed = req.qty if req.side == "BUY" else -req.qty
-            self._cash -= signed * price
-            prev = self._positions.get(req.symbol)
-            new_qty = (prev.qty if prev else 0) + signed
-            self._positions[req.symbol] = Position(req.symbol, new_qty, price)
             self._seq += 1
-            self._fills.append(Fill(fill_id=f"fill-{self._seq}", symbol=req.symbol,
-                                    side=req.side, qty=req.qty, price=price,
-                                    ts=f"t{self._seq}"))
+            self._apply_fill(req, price, self._seq)
             del self._pending_fills[boid]
             self._open.pop(boid, None)
             self._pending_cancels.pop(boid, None)   # fill won the race
@@ -163,8 +149,23 @@ class SimBroker(Broker):
                 self._open.pop(boid, None)
                 self._pending_fills.pop(boid, None)
 
+    def _apply_fill(self, req: OrderRequest, price: float, seq: int) -> None:
+        """Apply a fill: update cash, positions, and record fill.
+        seq must be pre-incremented by the caller."""
+        signed = req.qty if req.side == "BUY" else -req.qty
+        self._cash -= signed * price
+        prev = self._positions.get(req.symbol)
+        new_qty = (prev.qty if prev else 0) + signed
+        self._positions[req.symbol] = Position(req.symbol, new_qty, price)
+        fill_id = f"fill-{seq}"
+        ts = f"t{seq}"
+        self._fills.append(Fill(fill_id=fill_id, symbol=req.symbol,
+                                side=req.side, qty=req.qty, price=price, ts=ts))
+
     def cancel_all(self) -> None:
         self._open.clear()
+        self._pending_fills.clear()
+        self._pending_cancels.clear()
 
     def get_account(self) -> AccountSnapshot:
         positions = tuple(self._positions.values())
