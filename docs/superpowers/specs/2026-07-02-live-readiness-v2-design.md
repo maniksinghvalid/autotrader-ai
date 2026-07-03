@@ -34,6 +34,16 @@ found five Critical gaps and ~20 Important ones that the earlier piecewise task 
   (daily-loss HALT that flattens the book; `HALTED_UNHEALTHY` watchdog exhaustion) post
   nothing to Slack. The operator learns of a 13:30 flatten from the 16:30 EOD report at best.
 
+- **C6** *(added after review of host coexistence)* — AutoTrader shares its Moomoo SIMULATE
+  account and OpenD instance (127.0.0.1:11111) with the independent SNP trader bot
+  (`~/Documents/AI/ai-snp-trading-claude`, launchd label `com.bot.trading`). AutoTrader is
+  account-sovereign by design: `StopManager.reconcile` cancels every account order it does not
+  recognize and attaches trailing stops to every held equity long; `cancel_all`/`_flatten_all`
+  hit the whole account; `reconcile_fills` ingests account-wide fills into the perf/EOD
+  projections; the daily-loss halt reads account-level P&L. Run concurrently on the shared
+  account, AutoTrader cancels the SNP bot's orders, stop-manages and can flatten its
+  positions, and reports its fills as AutoTrader activity.
+
 Plus, condensed: a realized-only daily-loss check that fails *open* when broker fields are
 missing; a session halt that does not survive restart; a halt-flatten that can cancel its own
 liquidation orders; an escalation cancel-race (`RET_OK` means request-accepted, not cancelled);
@@ -54,6 +64,10 @@ proceed in stages. Success means:
 4. A written, rehearsable `CUTOVER.md` (procedure + rollback) exists.
 5. The trader survives a host reboot unattended and alerts on its own death or halt within
    minutes, not at end of day.
+6. AutoTrader and the SNP trader bot coexist on the shared SIMULATE account without AutoTrader
+   cancelling, stop-managing, flattening, or reporting the SNP bot's orders/positions/fills
+   (`SHARED` ownership mode), and live mode structurally refuses to run scoped-down (`SOLE`
+   enforced).
 
 ## 3. Cutover stage model
 
@@ -61,8 +75,8 @@ Staging governs **flag flips only**. All code fixes in this spec land now, in on
 
 | Stage | State | Flags | Gated by |
 |-------|-------|-------|----------|
-| 0 | Paper, everything enabled (today) | unchanged | — |
-| 1 | **First live flip**: internal breakout strategy + trailing stops + risk halts only | `RISK_TRADING_ENV=LIVE`; **new** `RISK_SIGNALS_ENABLED=0`; `RISK_LIMIT_ORDERS_ENABLED=0`; overlays off; `RISK_REBALANCE_ENABLED=0` | V1–V5, V8, V9, V10 |
+| 0 | Paper, everything enabled (today) | unchanged; **new** `RISK_ACCOUNT_OWNERSHIP=SHARED` while the SNP bot coexists on the account | V11 |
+| 1 | **First live flip**: internal breakout strategy + trailing stops + risk halts only | `RISK_TRADING_ENV=LIVE`; `RISK_ACCOUNT_OWNERSHIP=SOLE` (enforced); **new** `RISK_SIGNALS_ENABLED=0`; `RISK_LIMIT_ORDERS_ENABLED=0`; overlays off; `RISK_REBALANCE_ENABLED=0` | V1–V5, V8, V9, V10, V11 |
 | 2 | Webhook/inbox signals enabled | `RISK_SIGNALS_ENABLED=1` | V6 + N clean Stage-1 sessions |
 | 3 | Limit-order escalation, options overlays, rebalancing | `RISK_LIMIT_ORDERS_ENABLED=1`; overlays on; `RISK_REBALANCE_ENABLED=1` | V7 (+ V5 exposure) + N clean Stage-2 sessions + logged rebalance dry-run |
 
@@ -221,13 +235,60 @@ In `autotrader/moomoo_broker.py`, `autotrader/options/chain.py`, `planner.py`:
 - **`PRE-LIVE.md` v2:** rewritten as the staged gate referencing V1–V10, replacing the flat
   checklist.
 
+### V11 — SNP-bot coexistence *(C6; Stage 0 onward — needed for today's paper operation)*
+
+The SNP trader bot (separate repo, same Mac) shares the Moomoo SIMULATE account and the OpenD
+instance. AutoTrader's sovereignty assumption becomes an explicit config:
+`RISK_ACCOUNT_OWNERSHIP` = `SOLE` (default; today's behavior) | `SHARED`.
+
+In `SHARED` mode, every account-wide operation scopes to AutoTrader's own book, identified via
+its DB (trades projection / broker order ids / tracked entry fills):
+
+- **Orphan sweep** cancels only orders known to AutoTrader's DB; foreign orders are logged
+  (`foreign order observed`) and left untouched.
+- **Stop attach** covers only positions AutoTrader opened — SNP positions are never
+  stop-managed.
+- **`cancel_all`** (EOD, shutdown, hard halt) and **`_flatten_all`** (hard halt) operate on
+  tracked orders/positions only.
+- **`reconcile_fills` ingestion** filters to tracked order ids — foreign fills never enter the
+  perf rows or EOD report.
+- **The daily-loss halt stays account-level** — deliberately conservative: SNP losses can
+  block/halt AutoTrader entries (fail-safe in the shared direction), but the halt-flatten
+  still touches only AutoTrader's positions.
+
+Guard rails and hygiene:
+
+- Startup **refuses `RISK_TRADING_ENV=LIVE` with `SHARED`** — live money never runs with
+  scoped-down sweeps. `CUTOVER.md` asserts LIVE ⇒ SOLE.
+- Distinct audit journal: AutoTrader's configurable audit path (V9) defaults to
+  `~/.autotrader_trade_audit.jsonl`; `~/.futu_trade_audit.jsonl` remains the vendored-skills /
+  SNP journal.
+- launchd namespace: AutoTrader agents use `com.autotrader.*` (SNP owns `com.bot.trading`);
+  neither bot manages the OpenD process.
+- Shared-quota budget: the 10-refresh/30s per-account OpenD quota is shared; `SHARED` mode
+  reduces AutoTrader's rate-limiter budget (configurable), and the RUNBOOK documents that
+  SNP's 5-minute-bar subscriptions consume the same OpenD's subscription quota.
+- `CUTOVER.md` coexistence check: at Stage 1 AutoTrader moves to the LIVE account while SNP
+  stays SIMULATE, ending the account-level collision by construction; verify both processes
+  healthy and quote-quota headroom afterward.
+
+Known trade-off (accepted): paper Stage 0 runs `SHARED` while live runs `SOLE`, so routine
+paper operation no longer rehearses exact live sweep behavior. Mitigation: the pre-cutover
+checklist includes one supervised paper session in `SOLE` mode with the SNP bot stopped.
+
+Operational note (until V11 lands): the current paper AutoTrader cancels SNP working orders at
+ENTRY_OPEN and attaches stops to SNP positions — do not run both bots concurrently with SNP
+orders open on the shared account.
+
 ## 5. Testing strategy
 
 - Every Critical gets a regression test that **fails on today's code**: C1 (job raises → batch
   survives → retry next poll), C2 (async fill → stop attaches from fill; orphan → intraday
   reconcile), C3 (replayed body → second enqueue/route is a no-op; stale timestamp → 401),
   C4 (zero/NaN-delta chains → skip; inverted collar → rejected), C5 code-half (HALT posts to a
-  stubbed Slack).
+  stubbed Slack), C6 (in SHARED mode: a foreign order survives the orphan sweep; a foreign
+  position gets no stop attached; a foreign fill is excluded from perf/EOD;
+  `cancel_all`/`_flatten_all` touch the tracked book only; startup rejects LIVE+SHARED).
 - V1's async rig is the enabling mechanism for C2/V5 offline coverage.
 - Ops items that cannot be unit-tested (launchd restart, backups) get explicit verification
   steps in the implementation plan (reboot "pull-the-plug" test; restore-from-backup drill)
@@ -251,7 +312,8 @@ In `autotrader/moomoo_broker.py`, `autotrader/options/chain.py`, `planner.py`:
 
 ## 7. Execution shape
 
-One implementation plan (~18–22 TDD tasks), executed subagent-driven on a feature branch off
+One implementation plan (~20–24 TDD tasks), executed subagent-driven on a feature branch off
 `develop`, mirroring the W1–W8 round. Dependency order: V1 first (rig), then V2–V5 (core), then
-V6/V7 (parallelizable), then V8–V10 (ops/docs; V8's alert plumbing lands before V2's alert
-call site or is stubbed until then — plan resolves this ordering).
+V6/V7/V11 (parallelizable; V11 early — it fixes a collision that exists in today's paper
+operation), then V8–V10 (ops/docs; V8's alert plumbing lands before V2's alert call site or is
+stubbed until then — plan resolves this ordering).
