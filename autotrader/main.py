@@ -822,11 +822,14 @@ class TradeEngine:
         elif action is RiskAction.HALT:
             reason = f"daily loss halt: pnl={snap.day_pnl}"
             round_id = f"halt-{now.date().isoformat()}"
-            self._flatten_all(snap, round_id)   # BEFORE halt flag (guard would block)
+            # V4d: cancel FIRST (clears stops/limits), THEN flatten — the
+            # liquidation SELLs must never be swept by our own cancel. On live
+            # they fill async and must be left resting.
             try:
                 self._b.cancel_all()
             except Exception as e:
                 logger.error("RISK_CHECK halt: cancel_all failed: %s", e)
+            self._flatten_all(snap, round_id)   # BEFORE halt flag (guard would block)
             if self._gate is not None:
                 self._gate.halt()
             if self._db:
