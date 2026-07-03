@@ -92,3 +92,16 @@ def test_get_account_day_pnl_unknown_propagates_on_position_query_failure():
     snap = b.get_account()
     assert snap.positions_loaded is False
     assert snap.day_pnl_known is False
+
+
+def test_get_account_day_pnl_unknown_when_field_garbage_typed():
+    # A live API shape change could hand back a non-numeric value (e.g. "N/A")
+    # instead of removing the field outright. The old code routed this through
+    # safe_float(), which swallows the parse error and returns 0.0 — so
+    # day_pnl_known ended up True with day_pnl == 0.0 ("known good, zero
+    # loss"), the exact silent misread this fail-closed check must prevent.
+    row = _Row(cash=1000.0, total_assets=5000.0, realized_pl="N/A")
+    b = _broker(_PnlTrade(row))
+    snap = b.get_account()
+    assert snap.day_pnl_known is False
+    assert snap.day_pnl == 0.0

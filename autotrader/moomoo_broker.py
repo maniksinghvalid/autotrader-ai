@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import math
+import numbers
 import os
 import sys
 from typing import List, Optional
@@ -339,10 +340,18 @@ class MoomooBroker(Broker):
         total = self._c.safe_float(self._c.safe_get(acc.iloc[0], "total_assets", default=0))
         pnl_raw = self._c.safe_get(acc.iloc[0], "realized_pl", "today_pnl_value",
                                    default=None)
-        pnl = self._c.safe_float(pnl_raw) if pnl_raw is not None else 0.0
-        day_pnl_known = pnl_raw is not None and math.isfinite(pnl)
+        # Do NOT route through safe_float here: it swallows a garbage-typed
+        # value (e.g. a non-numeric string from a live API shape change) and
+        # returns 0.0, which would then read as "known good, zero loss" —
+        # exactly the silent misread this fail-closed check exists to catch.
+        # Verify the type BEFORE coercing; only a real number counts as known.
+        day_pnl_known = (
+            isinstance(pnl_raw, numbers.Real)
+            and not isinstance(pnl_raw, bool)
+            and math.isfinite(pnl_raw)
+        )
+        pnl = float(pnl_raw) if day_pnl_known else 0.0
         if not day_pnl_known:
-            pnl = 0.0
             logger.warning("get_account: no realized_pl/today_pnl_value field — "
                            "day_pnl UNKNOWN (risk check will fail closed)")
         upnl = self._c.safe_float(self._c.safe_get(acc.iloc[0], "unrealized_pl", default=0))
