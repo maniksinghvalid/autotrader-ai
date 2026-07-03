@@ -42,6 +42,11 @@ class RiskConfig:
     # Hard daily-loss flatten+halt threshold (must exceed the soft daily_loss_limit,
     # which gates new entries). Both are positive; breach when day_pnl <= -value.
     daily_loss_halt: float = 1000.0
+    # Unrealized-drawdown ENTRY BLOCK (V4b): positive dollars; 0 disables. On
+    # breach only NEW entries are blocked — never a flatten (open positions
+    # exit via their trailing stops). Closes the "open position collapses
+    # intraday, realized-only halt never fires" hole.
+    unrealized_loss_gate: float = 0.0
     # --- Options overlays (additive; DEFAULT-OFF). allowed_overlays empty AND
     # max_option_contracts=0 both block option orders. Strike/expiry are chosen by
     # delta+DTE targets. All values are HUMAN-REVIEW risk limits. ---
@@ -136,6 +141,7 @@ def load_risk_config() -> RiskConfig:
         rebalance_cash_buffer_pct=_f("RISK_REBALANCE_CASH_BUFFER_PCT", 10.0),
         target_staleness_hours=_f("RISK_TARGET_STALENESS_HOURS", 24.0),
         daily_loss_halt=daily_loss_halt,
+        unrealized_loss_gate=_f("RISK_UNREALIZED_LOSS_GATE", 0.0),
         allowed_overlays=overlays,
         max_option_contracts=int(_f("RISK_MAX_OPTION_CONTRACTS", 0)),
         max_option_premium_per_trade=_f("RISK_MAX_OPTION_PREMIUM_PER_TRADE", 0.0),

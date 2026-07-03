@@ -24,4 +24,7 @@ def evaluate(snapshot: AccountSnapshot, cfg: RiskConfig) -> RiskAction:
         return RiskAction.HALT
     if snapshot.day_pnl <= -abs(cfg.daily_loss_limit):
         return RiskAction.GATE
+    if (cfg.unrealized_loss_gate > 0
+            and snapshot.unrealized_pnl <= -abs(cfg.unrealized_loss_gate)):
+        return RiskAction.GATE
     return RiskAction.OK
