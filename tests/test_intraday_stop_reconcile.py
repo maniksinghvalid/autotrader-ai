@@ -2,7 +2,7 @@ from datetime import datetime, date
 
 from autotrader.lifecycle import EntryGate
 from autotrader.runner import SessionRunner
-from autotrader.scheduler import LifecycleScheduler
+from autotrader.scheduler import LifecycleScheduler, RISK_CHECK_MID
 
 
 class _Recorder:
@@ -77,14 +77,18 @@ def _runner(sm, gate=None):
 
 
 def test_mid_risk_check_runs_stop_reconcile():
+    # Calls _run_job(RISK_CHECK_MID, ...) directly rather than run_once(), which
+    # would cascade PRE_OPEN_SYNC/ENTRY_OPEN/REBALANCE/RISK_CHECK_MID in one pass
+    # and entangle ENTRY_OPEN's own (unconditional) reconcile call with the
+    # assertion here. This isolates the test to RISK_CHECK_MID's own guard.
     sm = _Recorder()
-    _runner(sm).run_once(datetime(2026, 7, 6, 13, 31))  # PRE_OPEN..RISK_CHECK_MID due
-    assert date(2026, 7, 6) in sm.calls
+    _runner(sm)._run_job(RISK_CHECK_MID, datetime(2026, 7, 6, 13, 31))
+    assert sm.calls == [date(2026, 7, 6)]
 
 
 def test_halted_gate_skips_reconcile():
     sm = _Recorder()
     gate = EntryGate(enabled=True)
     gate.halt()
-    _runner(sm, gate).run_once(datetime(2026, 7, 6, 13, 31))
+    _runner(sm, gate)._run_job(RISK_CHECK_MID, datetime(2026, 7, 6, 13, 31))
     assert sm.calls == []

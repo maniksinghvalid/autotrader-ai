@@ -105,10 +105,8 @@ class SessionRunner:
             logger.info("ENTRY_OPEN: entries enabled")
             # W1: reconcile protective stops FIRST (EOD cancelled them; DAY TIF
             # would have lapsed them anyway), then replay deferred entries —
-            # whose own stops attach at entry. Skipped when halted: a flattened
-            # book needs no stops.
-            if (self._stop_manager is not None
-                    and not (self._gate is not None and self._gate.halted)):
+            # whose own stops attach at entry.
+            if self._stop_manager is not None:
                 self._stop_manager.reconcile(now.date())
             # Replay any external BUYs that arrived pre-market (deferred, not dropped)
             # now that the window is open — routed against a fresh snapshot/quote.
