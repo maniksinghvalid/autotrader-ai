@@ -63,6 +63,9 @@ def _chain_windows(expiries, today, dte_min, dte_max, max_span=30):
 
 
 class MoomooBroker(Broker):
+    _warned_no_pnl = False   # class default: throttles the no-account-P&L warning
+                             # to once, and survives __new__-bypass in offline tests.
+
     def __init__(self, acc_id: Optional[int] = None):
         self._c = _load_common()
         self._acc_id = acc_id if acc_id is not None else self._c.get_default_acc_id()
@@ -361,9 +364,16 @@ class MoomooBroker(Broker):
             and math.isfinite(pnl_raw)
         )
         pnl = float(pnl_raw) if day_pnl_known else 0.0
-        if not day_pnl_known:
-            logger.warning("get_account: no realized_pl/today_pnl_value field — "
-                           "day_pnl UNKNOWN (risk check will fail closed)")
+        if not day_pnl_known and not self._warned_no_pnl:
+            # Paper accounts return account-level realized_pl as 'N/A'; there is no
+            # daily-P&L field on the accinfo row at all. Reported UNKNOWN so the
+            # engine derives day P&L from the fill ledger instead (see
+            # TradeEngine._derive_day_pnl). Logged once — it is a standing account
+            # trait, not a per-query fault.
+            logger.warning("get_account: account row has no numeric realized_pl / "
+                           "daily-P&L field (paper accounts return 'N/A') — day P&L "
+                           "reported UNKNOWN; derived from the fill ledger downstream")
+            self._warned_no_pnl = True
         upnl = self._c.safe_float(self._c.safe_get(acc.iloc[0], "unrealized_pl", default=0))
         positions = self._positions()
         if positions is None:

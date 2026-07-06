@@ -4,10 +4,20 @@ Clock lets the scheduler and watchdog be tested deterministically: production
 uses Clock(); tests use FixedClock."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
+from typing import FrozenSet
 from zoneinfo import ZoneInfo
 
 _NY = ZoneInfo("America/New_York")
+
+
+def is_trading_day(d: date, holidays: FrozenSet[date] = frozenset()) -> bool:
+    """Pure trading-calendar predicate: True on weekdays that are not configured
+    full-day market holidays. The caller passes the date (from the injected Clock)
+    and the holiday set (from RiskConfig.market_holidays). No SDK, no I/O, no
+    clock. Early-close (half-day) awareness is a tracked PRE-LIVE follow-up,
+    deliberately not implemented here."""
+    return d.weekday() < 5 and d not in holidays
 
 
 class Clock:

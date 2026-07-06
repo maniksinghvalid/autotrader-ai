@@ -197,6 +197,14 @@ class DB:
             )
             self._conn.commit()
 
+    def read_fill_rows(self) -> List:
+        """(symbol, side, qty, price, ts) for every recorded fill, oldest-agnostic
+        (realized_from_fills sorts by ts). Feeds fills-derived realized P&L in both
+        the engine risk check and the runner's perf recording."""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT symbol, side, qty, price, ts FROM fills").fetchall()
+
     def record_fills(self, fills: List) -> int:
         """Upsert fills by fill_id (idempotent). Returns count of newly inserted rows."""
         inserted = 0

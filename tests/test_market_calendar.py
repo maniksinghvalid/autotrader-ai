@@ -4,7 +4,7 @@ Friday's close). Early-close support is a tracked PRE-LIVE follow-up."""
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from autotrader.market_calendar import is_trading_day
+from autotrader.clock import is_trading_day
 
 _NY = ZoneInfo("America/New_York")
 

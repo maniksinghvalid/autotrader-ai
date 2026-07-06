@@ -93,7 +93,7 @@ class RiskConfig:
     # see _submit_with_escalation in main.py.
     escalation_dwell_seconds: float = 20.0
     # Trading calendar (spec W3): full-day market holidays, added to the
-    # weekend gate in market_calendar.is_trading_day. Not a risk limit — but
+    # weekend gate in clock.is_trading_day. Not a risk limit — but
     # still config-only per CLAUDE.md (no hardcoded dates outside config).
     market_holidays: FrozenSet[date] = frozenset()
     # V11: account sovereignty. SOLE = today's behavior (sweep/flatten/report

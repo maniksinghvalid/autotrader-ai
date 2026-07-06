@@ -15,7 +15,9 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 from autotrader import books
 from autotrader.broker import Broker
 from autotrader.config import RiskConfig, load_risk_config
+from autotrader.day_pnl import unrealized_from_quotes
 from autotrader.domain import BrokerError, OrderRequest, OrderState, Signal
+from autotrader.reporting.pnl import realized_from_fills
 from autotrader.rebalance import compute_plan
 from autotrader.risk_check import evaluate as risk_evaluate, RiskAction
 from autotrader.risk_core import evaluate
@@ -52,13 +54,6 @@ def select_strategy_symbol(allowed_symbols, override: "Optional[str]" = None,
     if not allowed_symbols:
         return default
     return sorted(allowed_symbols)[0]
-
-
-def _post_slack(url, payload):
-    # Lazy import keeps reporting (and its stdlib urllib use) out of the hot
-    # import path for tests that never touch alerts.
-    from autotrader.reporting.eod_reporter import post_slack
-    return post_slack(url, payload)
 
 
 @dataclass(frozen=True)
@@ -654,7 +649,11 @@ class TradeEngine:
                      plan.overlay.value, stock_req.symbol, leg_states)
         if self._alert_url is None:
             return
-        post = self._alert_post or _post_slack
+        post = self._alert_post
+        if post is None:
+            # Lazy import keeps reporting out of the hot import path for tests
+            # that never touch alerts (they inject self._alert_post instead).
+            from autotrader.reporting.eod_reporter import post_slack as post
         text = (f"⚠ UNHEDGED — {stock_req.symbol} stock entry filled but the "
                 f"intended {plan.overlay.value} hedge is not confirmed FILLED "
                 f"(unfilled after the bounded fill-poll). "
@@ -881,12 +880,36 @@ class TradeEngine:
         else:
             self._b.cancel_all()
 
+    def _derive_day_pnl(self, snap, now):
+        """When the broker can't source day P&L (moomoo paper -> realized_pl='N/A',
+        so snap.day_pnl_known is False), derive it from OUR OWN records instead of
+        failing closed: realized from the fill ledger (avg-cost, today's sells) and
+        unrealized marked from live quotes — the same computation the runner uses
+        for EOD perf (via autotrader.day_pnl / reporting.pnl), so the two can't
+        drift. A broker that DOES report P&L is authoritative and left untouched;
+        an unreadable/absent ledger stays UNKNOWN so the check still fails closed."""
+        if snap.day_pnl_known or self._db is None:
+            return snap
+        try:
+            rows = self._db.read_fill_rows()
+        except Exception as e:   # ledger unreadable -> stay fail-closed, never guess
+            logger.error("risk check: fill ledger unreadable (%s) — day_pnl stays "
+                         "UNKNOWN (fail closed)", e)
+            return snap
+        realized = realized_from_fills(rows, now.date().isoformat())
+        # None = no sells today = nothing closed = 0 realized (KNOWN, not unknown).
+        day_pnl = realized if realized is not None else 0.0
+        unreal = unrealized_from_quotes(snap.positions, self._b.get_quote) \
+            if snap.positions_loaded else snap.unrealized_pnl
+        return _dc_replace(snap, day_pnl=day_pnl, day_pnl_known=True,
+                           unrealized_pnl=unreal)
+
     def apply_risk_check(self, now) -> str:
         """Tiered intraday preservation. GATE: close entries, keep positions +
         stops. HALT: cancel all working orders, then flatten all positions,
         record the halt, set the session halt flag. Returns the RiskAction
         name."""
-        snap = self._b.get_account()
+        snap = self._derive_day_pnl(self._b.get_account(), now)
         action = risk_evaluate(snap, self._cfg)
         # W7: performance rows are written ONLY by SessionRunner._record_perf
         # (fills-derived realized, quote-based unrealized) — never from engine
@@ -1088,10 +1111,11 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
     from autotrader.stops import StopManager
     stop_alert = None
     if slack_url:
-        stop_alert = lambda text: _post_slack(slack_url, {"text": text})
+        from autotrader.reporting.eod_reporter import post_slack
+        stop_alert = lambda text: post_slack(slack_url, {"text": text})
     stop_manager = StopManager(engine, broker, db, cfg, alert_fn=stop_alert)
 
-    from autotrader.market_calendar import is_trading_day
+    from autotrader.clock import is_trading_day
 
     # V8c: dead-man's-switch heartbeat — an external monitor (uptime pinger,
     # healthchecks.io, etc.) hit on a fixed cadence so a silently-wedged process

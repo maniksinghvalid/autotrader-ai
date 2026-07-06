@@ -18,6 +18,7 @@ from typing import Callable, Optional
 
 from autotrader.clock import Clock
 from autotrader.lifecycle import EntryGate, ground_truth_sync
+from autotrader.day_pnl import unrealized_from_quotes
 from autotrader.reporting.pnl import realized_from_fills
 from autotrader.scheduler import (
     LifecycleScheduler, PRE_OPEN_SYNC, ENTRY_OPEN, RISK_SWEEP, EOD_CANCEL_ORDERS,
@@ -83,14 +84,9 @@ class SessionRunner:
         return snap
 
     def _compute_unrealized(self, snap) -> float:
-        """Σ qty × (current_quote − avg_cost) over open positions using the
-        same snapshot. Positions with no live quote are skipped."""
-        total = 0.0
-        for p in snap.positions:
-            quote = self._broker.get_quote(p.symbol)
-            if quote is not None:
-                total += p.qty * (quote - p.avg_price)
-        return total
+        """Σ qty × (current_quote − avg_cost) over open positions, marked from live
+        quotes (shared with the engine risk check so the two cannot drift)."""
+        return unrealized_from_quotes(snap.positions, self._broker.get_quote)
 
     def _compute_realized(self) -> "float | None":
         rows = self._db._conn.execute(
