@@ -36,16 +36,6 @@ def test_record_fills_idempotent_on_duplicate_fill_id(tmp_path):
     db.close()
 
 
-def test_upsert_positions_stores_and_overwrites(tmp_path):
-    from autotrader.domain import Position
-    db = _db(tmp_path)
-    db.upsert_positions([Position("US.AAPL", 10, 150.0)])
-    db.upsert_positions([Position("US.AAPL", 15, 152.0)])  # update
-    row = db._conn.execute("SELECT qty, avg_price FROM positions WHERE symbol='US.AAPL'").fetchone()
-    assert row == (15, 152.0)
-    db.close()
-
-
 def test_replace_positions_reconciles_to_snapshot(tmp_path):
     from autotrader.domain import Position
     db = _db(tmp_path)

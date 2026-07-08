@@ -219,17 +219,6 @@ class DB:
             self._conn.commit()
         return inserted
 
-    def upsert_positions(self, positions: List) -> None:
-        ts = _now()
-        with self._lock:
-            for p in positions:
-                self._conn.execute(
-                    "INSERT OR REPLACE INTO positions (symbol,qty,avg_price,updated_at) "
-                    "VALUES (?,?,?,?)",
-                    (p.symbol, p.qty, p.avg_price, ts),
-                )
-            self._conn.commit()
-
     def replace_positions(self, positions: List) -> None:
         """Reconcile the positions table to mirror the broker snapshot: upsert
         every position present, then delete any symbol no longer in the snapshot.

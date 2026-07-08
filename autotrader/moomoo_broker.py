@@ -414,10 +414,6 @@ class MoomooBroker(Broker):
             ))
         return out
 
-    def get_open_orders_count(self) -> int:  # convenience for logs; -1 = unknown
-        orders = self.get_open_orders()
-        return len(orders) if orders is not None else -1
-
     def _is_paper(self) -> bool:
         """SIMULATE accounts have no deal/fill feed — deal_list_query returns
         ret=-1 'Paper trading does not support deal data'. Tolerates _env()
