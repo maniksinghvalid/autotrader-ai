@@ -36,6 +36,9 @@ class SimBroker(Broker):
         # Failure injection for tests of the None-vs-empty broker contract.
         self.fail_open_orders = False
         self.fail_reconcile_fills = False
+        # order_type names that should ack REJECTED (e.g. "TRAILING_STOP" to
+        # simulate Moomoo paper-trading's rejection of that type).
+        self.reject_order_types: set = set()
         self._recent_highs = dict(recent_highs or {})
         # V1 async rig: 0 = synchronous (today's behavior). >0 = orders ack
         # SUBMITTED and fill/cancel only after N tick_market() calls; within a
@@ -86,6 +89,9 @@ class SimBroker(Broker):
     def place_order(self, req: OrderRequest) -> OrderAck:
         if req.client_order_id in self._acks_by_cid:  # idempotency (R8)
             return self._acks_by_cid[req.client_order_id]
+        if req.order_type in self.reject_order_types:
+            return OrderAck(req.client_order_id, None, OrderState.REJECTED,
+                            {"error": f"{req.order_type} rejected (simulated)"})
         self._seq += 1
         boid = f"sim-{self._seq}"
         # A TRAILING_STOP is broker-RESTING; a non-marketable LIMIT rests too.

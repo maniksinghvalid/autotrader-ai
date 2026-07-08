@@ -120,6 +120,24 @@ def test_rejected_attach_alerts_operator(tmp_path):
     db.close()
 
 
+def test_broker_rejected_attach_counts_as_failed_and_alerts(tmp_path):
+    """Regression: Moomoo paper trading rejects TRAILING_STOP orders outright
+    (broker-level REJECTED ack; risk core never sees a problem). Before the
+    fix, attach_trailing_stop returned True unconditionally after submit, so
+    this counted as 'attached' and the operator was never alerted — silently
+    unprotected positions."""
+    alerts = []
+    b = SimBroker(quotes={"US.AAPL": 100.0}, cash=100000.0)
+    b.reject_order_types = {"TRAILING_STOP"}
+    _seed_long(b)
+    mgr, db, _ = _mgr(tmp_path, b, alert_fn=alerts.append)
+    res = mgr.reconcile(TODAY)
+    assert res.attach_failed == 1 and res.attached == 0
+    assert b.get_open_orders() == []                    # no resting stop was left behind
+    assert len(alerts) == 1 and "US.AAPL" in alerts[0]
+    db.close()
+
+
 def test_stale_snapshot_is_a_noop(tmp_path):
     class StaleBroker(SimBroker):
         def get_account(self):

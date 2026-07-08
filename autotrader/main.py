@@ -683,7 +683,8 @@ class TradeEngine:
         the entry's signal id, so re-attaching for the same entry dedupes at the
         router. A rejected stop is logged, never fatal to the entry. Stop
         consolidation on qty changes (pyramiding) is Phase 3. Returns True iff
-        the stop was actually placed (risk-approved and submitted).
+        the stop was actually placed (risk-approved, submitted, AND accepted by
+        the broker — not REJECTED/UNKNOWN).
 
         C2 fix: on live a MARKET BUY acks SUBMITTED and fills async. Attach
         only after the entry is confirmed off the book, so the re-fetched
@@ -709,6 +710,10 @@ class TradeEngine:
                 qty=req.qty, order_type=req.order_type, limit_price=req.limit_price,
                 broker_order_id=ack.broker_order_id, state=ack.state.value,
             )
+        if ack.state in (OrderState.REJECTED, OrderState.UNKNOWN):
+            logger.error("trailing stop NOT attached for %s: broker %s (%s)",
+                        symbol, ack.state.value, ack.raw.get("error", "no detail"))
+            return False
         logger.info("trailing stop attached: %s SELL %d @ %.1f%% trail",
                     symbol, qty, self._cfg.trailing_stop_pct)
         return True
