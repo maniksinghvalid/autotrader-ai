@@ -1049,6 +1049,7 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
         logging.getLogger().addHandler(fh)
     cfg = load_risk_config()
     logger.info("TRADING_ENV=%s (paper-only v1)", cfg.trading_env)
+    logger.info("ACCOUNT_OWNERSHIP=%s", cfg.account_ownership)
     if cfg.trading_env != "PAPER":
         logger.error("v1 is paper-only; refusing to start with TRADING_ENV=%s", cfg.trading_env)
         return 2
