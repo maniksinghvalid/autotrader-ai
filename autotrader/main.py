@@ -757,7 +757,9 @@ class TradeEngine:
             # rebalance reconciliation from a loss-halt liquidation).
             kind = "liquidation" if round_id.startswith("halt") else "rebalance"
             reason = {"TRIM": "overweight → trim",
-                      "TOPUP": "underweight → top-up"}.get(trade.action, trade.action.lower())
+                      "TOPUP": "underweight → top-up",
+                      "STOP": "trailing stop (simulated) triggered",
+                      }.get(trade.action, trade.action.lower())
             self._db.record_driver(trade.symbol, trade.side, kind, f"{round_id} · {reason}")
         return TickResult("ORDER_PLACED", str(ack.broker_order_id))
 
@@ -1151,6 +1153,7 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
         alerts=alerts,
         heartbeat=heartbeat,
         heartbeat_every=int(os.getenv("AUTOTRADER_HEARTBEAT_EVERY", "60")),
+        simstop_interval=float(os.getenv("AUTOTRADER_SIMSTOP_INTERVAL", "60")),
     )
 
     stopped = {"flag": False}

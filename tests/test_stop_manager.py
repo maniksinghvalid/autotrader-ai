@@ -1,7 +1,12 @@
 """StopManager (spec W1): every held long must have exactly one working
 trailing stop each morning; orphaned orders (stops for closed positions,
-leftover option legs) are cancelled. Unknown broker state -> logged no-op."""
-from datetime import date
+leftover option legs) are cancelled. Unknown broker state -> logged no-op.
+
+Simulated stops (paper): Moomoo paper rejects broker-side TRAILING_STOP, so
+in PAPER a failed attach arms an engine-side high-water-mark stop instead of
+alerting UNPROTECTED; check_simulated ratchets it and fires the exit SELL."""
+import json
+from datetime import date, datetime
 
 from autotrader.config import RiskConfig
 from autotrader.db import DB
@@ -108,33 +113,50 @@ def test_unknown_book_is_a_noop(tmp_path):
 
 
 def test_rejected_attach_alerts_operator(tmp_path):
+    # LIVE: a failed attach is failed + UNPROTECTED alert (no simulated
+    # fallback — that's paper-only). Here the risk core rejects the stop.
     alerts = []
     b = SimBroker(quotes={"US.AAPL": 100.0}, cash=100000.0)
     _seed_long(b)
-    # symbol NOT in the allow-list -> risk core rejects the stop -> alert
-    mgr, db, _ = _mgr(tmp_path, b, cfg=_cfg(allowed_symbols=frozenset({"US.MSFT"})),
+    mgr, db, _ = _mgr(tmp_path, b,
+                      cfg=_cfg(trading_env="LIVE",
+                               allowed_symbols=frozenset({"US.MSFT"})),
                       alert_fn=alerts.append)
     res = mgr.reconcile(TODAY)
     assert res.attach_failed == 1 and res.attached == 0
+    assert res.simulated == 0 and db.get_state("simstop:US.AAPL") is None
     assert len(alerts) == 1 and "US.AAPL" in alerts[0]
     db.close()
 
 
 def test_broker_rejected_attach_counts_as_failed_and_alerts(tmp_path):
-    """Regression: Moomoo paper trading rejects TRAILING_STOP orders outright
-    (broker-level REJECTED ack; risk core never sees a problem). Before the
-    fix, attach_trailing_stop returned True unconditionally after submit, so
-    this counted as 'attached' and the operator was never alerted — silently
-    unprotected positions."""
+    """LIVE never simulates: any attach failure stays failed + alerted, no
+    simstop KV. (In PAPER the same rejection arms a simulated stop — see
+    test_paper_reject_arms_simulated_stop.)"""
     alerts = []
     b = SimBroker(quotes={"US.AAPL": 100.0}, cash=100000.0)
     b.reject_order_types = {"TRAILING_STOP"}
     _seed_long(b)
-    mgr, db, _ = _mgr(tmp_path, b, alert_fn=alerts.append)
+    mgr, db, _ = _mgr(tmp_path, b, cfg=_cfg(trading_env="LIVE"),
+                      alert_fn=alerts.append)
     res = mgr.reconcile(TODAY)
     assert res.attach_failed == 1 and res.attached == 0
+    assert res.simulated == 0 and db.get_state("simstop:US.AAPL") is None
     assert b.get_open_orders() == []                    # no resting stop was left behind
     assert len(alerts) == 1 and "US.AAPL" in alerts[0]
+    db.close()
+
+
+def test_broker_rejected_ack_attach_returns_false(tmp_path):
+    """Regression (ddd8a10): a broker-level REJECTED ack (risk core saw no
+    problem) must make attach_trailing_stop return False — before the fix it
+    returned True unconditionally after submit."""
+    b = SimBroker(quotes={"US.AAPL": 100.0}, cash=100000.0)
+    b.reject_order_types = {"TRAILING_STOP"}
+    _seed_long(b)
+    _, db, eng = _mgr(tmp_path, b)
+    assert eng.attach_trailing_stop("US.AAPL", 10, 100.0, "t1") is False
+    assert b.get_open_orders() == []
     db.close()
 
 
@@ -194,4 +216,131 @@ def test_runner_reconciles_stops_at_entry_open(tmp_path):
                            sleep=lambda s: None, stop_manager=mgr)
     runner.run_once(datetime(2026, 7, 6, 9, 46, tzinfo=ZoneInfo("America/New_York")))
     assert db.get_open_trailing_stop("US.AAPL") is not None
+    db.close()
+
+
+# --- simulated trailing stops (paper) -------------------------------------
+
+NOW = datetime(2026, 7, 6, 10, 0)
+
+
+def _paper_broker(quote=100.0):
+    b = SimBroker(quotes={"US.AAPL": quote}, cash=100000.0)
+    b.reject_order_types = {"TRAILING_STOP"}            # Moomoo paper behavior
+    _seed_long(b)
+    return b
+
+
+def _held_qty(broker, symbol="US.AAPL"):
+    return sum(p.qty for p in broker.get_account().positions
+               if p.symbol == symbol)
+
+
+def test_paper_reject_arms_simulated_stop(tmp_path):
+    alerts = []
+    b = _paper_broker()
+    mgr, db, _ = _mgr(tmp_path, b, alert_fn=alerts.append)
+    res = mgr.reconcile(TODAY)
+    assert res.simulated == 1 and res.attach_failed == 0 and res.attached == 0
+    assert alerts == []                                 # no UNPROTECTED spam
+    state = json.loads(db.get_state("simstop:US.AAPL"))
+    assert state == {"hwm": 100.0, "since": TODAY.isoformat()}
+    db.close()
+
+
+def test_simulated_stop_counts_protected_next_reconcile(tmp_path):
+    alerts = []
+    b = _paper_broker()
+    mgr, db, _ = _mgr(tmp_path, b, alert_fn=alerts.append)
+    mgr.reconcile(TODAY)
+    res2 = mgr.reconcile(TODAY)                         # intraday backstop run
+    assert res2.simulated == 1 and res2.attach_failed == 0
+    assert alerts == []                                 # never re-alerts
+    db.close()
+
+
+def test_simulated_stop_fires_sell_on_breach(tmp_path):
+    b = _paper_broker()
+    mgr, db, _ = _mgr(tmp_path, b)
+    mgr.reconcile(TODAY)                                # arms at hwm=100
+    b._quotes["US.AAPL"] = 94.0                         # 5% trail -> threshold 95
+    assert mgr.check_simulated(NOW) == 1
+    assert _held_qty(b) == 0                            # position liquidated
+    assert db.get_state("simstop:US.AAPL") is None
+    db.close()
+
+
+def test_hwm_ratchets_and_persists(tmp_path):
+    b = _paper_broker()
+    mgr, db, _ = _mgr(tmp_path, b)
+    mgr.reconcile(TODAY)
+    b._quotes["US.AAPL"] = 110.0
+    assert mgr.check_simulated(NOW) == 0                # ratchet, no fire
+    assert json.loads(db.get_state("simstop:US.AAPL"))["hwm"] == 110.0
+    b._quotes["US.AAPL"] = 105.0                        # above 110*0.95=104.5
+    assert mgr.check_simulated(NOW) == 0
+    assert _held_qty(b) == 10
+    b._quotes["US.AAPL"] = 104.0                        # breach
+    assert mgr.check_simulated(NOW) == 1
+    assert _held_qty(b) == 0
+    db.close()
+
+
+def test_simulated_stop_survives_restart(tmp_path):
+    b = _paper_broker()
+    mgr, db, _ = _mgr(tmp_path, b)
+    mgr.reconcile(TODAY)
+    b._quotes["US.AAPL"] = 110.0
+    mgr.check_simulated(NOW)                            # hwm ratcheted to 110
+    db.close()
+    mgr2, db2, _ = _mgr(tmp_path, b)                    # fresh process, same DB file
+    b._quotes["US.AAPL"] = 104.0
+    assert mgr2.check_simulated(NOW) == 1               # KV-driven, no memory state
+    assert _held_qty(b) == 0
+    db2.close()
+
+
+def test_closed_position_clears_sim_state(tmp_path):
+    b = _paper_broker()
+    mgr, db, _ = _mgr(tmp_path, b)
+    mgr.reconcile(TODAY)
+    b.place_order(OrderRequest(symbol="US.AAPL", side="SELL", qty=10,
+                               order_type="MARKET", limit_price=None,
+                               client_order_id="ext-sell"))   # sold externally
+    assert mgr.check_simulated(NOW) == 0
+    assert db.get_state("simstop:US.AAPL") is None
+    db.close()
+
+
+def test_morning_reseed_resets_hwm_no_insta_fire(tmp_path):
+    """A gap-down overnight must not insta-fire at the open: the first sweep of
+    a new day reseeds the hwm to the morning quote (live DAY-stop parity)."""
+    b = _paper_broker(quote=100.0)                      # gapped down from 110
+    mgr, db, _ = _mgr(tmp_path, b)
+    db.set_state("simstop:US.AAPL",
+                 json.dumps({"hwm": 110.0, "since": "2026-07-05"}))
+    assert mgr.check_simulated(NOW) == 0                # reseed, no fire
+    assert _held_qty(b) == 10
+    assert json.loads(db.get_state("simstop:US.AAPL")) == \
+        {"hwm": 100.0, "since": TODAY.isoformat()}
+    db.close()
+
+
+def test_failed_trigger_sell_keeps_state_and_alerts_once(tmp_path):
+    """If the trigger SELL is rejected (here: risk-core allow-list), the KV
+    must survive (position still unprotected -> retry next sweep) and the
+    operator is alerted exactly once per (symbol, day)."""
+    alerts = []
+    b = _paper_broker()
+    mgr, db, _ = _mgr(tmp_path, b,
+                      cfg=_cfg(allowed_symbols=frozenset({"US.MSFT"})),
+                      alert_fn=alerts.append)
+    res = mgr.reconcile(TODAY)                          # risk-rejected attach also arms
+    assert res.simulated == 1
+    b._quotes["US.AAPL"] = 94.0
+    assert mgr.check_simulated(NOW) == 0                # sell rejected by risk core
+    assert mgr.check_simulated(NOW) == 0                # retried next sweep
+    assert db.get_state("simstop:US.AAPL") is not None  # still armed
+    assert _held_qty(b) == 10
+    assert len(alerts) == 1 and "US.AAPL" in alerts[0]
     db.close()

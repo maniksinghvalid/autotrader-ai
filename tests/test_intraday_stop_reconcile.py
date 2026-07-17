@@ -1,4 +1,4 @@
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 from autotrader.lifecycle import EntryGate
 from autotrader.runner import SessionRunner
@@ -8,8 +8,11 @@ from autotrader.scheduler import LifecycleScheduler, RISK_CHECK_MID
 class _Recorder:
     def __init__(self):
         self.calls = []
+        self.sims = []
     def reconcile(self, today):
         self.calls.append(today)
+    def check_simulated(self, now):
+        self.sims.append(now)
 
 
 class _Engine:
@@ -94,3 +97,30 @@ def test_halted_gate_skips_reconcile():
     gate.halt()
     _runner(sm, gate)._run_job(RISK_CHECK_MID, datetime(2026, 7, 6, 13, 31))
     assert sm.calls == []
+
+
+def test_run_once_sweeps_simulated_stops_on_interval():
+    sm = _Recorder()
+    r = _runner(sm)
+    now = datetime(2026, 7, 6, 13, 31)
+    r.run_once(now)
+    assert sm.sims == [now]
+    r.run_once(now + timedelta(seconds=30))     # within 60s interval — skipped
+    assert len(sm.sims) == 1
+    r.run_once(now + timedelta(seconds=61))     # interval elapsed — swept again
+    assert len(sm.sims) == 2
+
+
+def test_sim_sweep_skipped_when_gate_closed():
+    sm = _Recorder()
+    gate = EntryGate(enabled=False)
+    _runner(sm, gate).run_once(datetime(2026, 7, 6, 9, 0))   # pre-open
+    assert sm.sims == []
+
+
+def test_sim_sweep_skipped_when_halted():
+    sm = _Recorder()
+    gate = EntryGate(enabled=True)
+    gate.halt()
+    _runner(sm, gate).run_once(datetime(2026, 7, 6, 13, 31))
+    assert sm.sims == []

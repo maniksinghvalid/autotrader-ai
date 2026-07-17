@@ -13,7 +13,7 @@ explicit lifecycle jobs (sync / cancel_all)."""
 from __future__ import annotations
 
 import logging
-from datetime import date as _date
+from datetime import date as _date, timedelta
 from typing import Callable, Optional
 
 from autotrader.clock import Clock
@@ -37,7 +37,8 @@ class SessionRunner:
                  trading_day_fn: Optional[Callable[[_date], bool]] = None,
                  alerts=None, owned_only: bool = False,
                  heartbeat: Optional[Callable[[], None]] = None,
-                 heartbeat_every: int = 60):
+                 heartbeat_every: int = 60,
+                 simstop_interval: float = 60.0):
         self._engine = engine
         self._broker = broker
         self._db = db
@@ -65,6 +66,9 @@ class SessionRunner:
         # alert (and db.record_halt) fires ONCE per episode, not every 5s
         # iteration while unhealthy.
         self._unhealthy_episode = False
+        # Simulated trailing stops (paper): sweep interval + next-due marker.
+        self._simstop_interval = simstop_interval
+        self._simstop_next = None
 
     def _fetch_account_for_perf(self, max_attempts: int = 4):
         """Fetch the account snapshot for the performance row, retrying with
@@ -207,6 +211,16 @@ class SessionRunner:
             self._unhealthy_episode = False
             if self._alerts is not None:
                 self._alerts.reset("watchdog-unhealthy")
+        # Simulated trailing stops (paper): protective exits run BEFORE new
+        # signals. Session-gated by entries_enabled (ENTRY_OPEN..RISK_SWEEP);
+        # the halted path already returned above.
+        # ponytail: sweep stops at 15:30 with the entry gate; live broker stops
+        # rest until EOD cancel — add a session predicate if the gap ever matters
+        if (self._stop_manager is not None and self._gate is not None
+                and self._gate.entries_enabled
+                and (self._simstop_next is None or now >= self._simstop_next)):
+            self._stop_manager.check_simulated(now)
+            self._simstop_next = now + timedelta(seconds=self._simstop_interval)
         action = self._engine.tick().action
         if self._inbox is not None:
             for sig in self._inbox.poll():
