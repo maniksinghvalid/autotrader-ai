@@ -95,8 +95,10 @@ RISK_UNREALIZED_LOSS_GATE=0.0
 
 # --- Account sovereignty (V11: SNP-bot coexistence on a shared paper account) ---
 # SOLE = today's behavior (sweep/flatten/report the whole account). SHARED =
-# every account-wide operation scopes to AutoTrader's own tracked book.
-# LIVE+SHARED is structurally refused.
+# every account-wide operation scopes to AutoTrader's own tracked book. Set
+# SHARED whenever the account also carries another bot's or manual trades.
+# LIVE+SHARED is structurally refused at config load — the live cutover uses a
+# dedicated account (SOLE).
 RISK_ACCOUNT_OWNERSHIP=SOLE
 
 # --- Stage-model cutover switch (V9) ---

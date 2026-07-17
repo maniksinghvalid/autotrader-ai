@@ -1,13 +1,88 @@
 """V4d: on live, flatten SELLs fill async — a cancel_all AFTER _flatten_all
-would cancel the liquidation itself. Order must be cancel-then-flatten."""
+would cancel the liquidation itself. Order must be cancel-then-flatten.
+
+P0b (shared-account safety): _flatten_all must never (a) sell shares pledged
+to a covered call (→ naked call) or (b) submit an option leg as an equity
+SELL. Option legs it cannot close are surfaced in an operator alert."""
 from datetime import datetime
 
 from autotrader.config import RiskConfig
-from autotrader.domain import OrderRequest
+from autotrader.domain import OrderRequest, Position
 from autotrader.lifecycle import EntryGate
 from autotrader.main import TradeEngine
 from autotrader.sim_broker import SimBroker
 from autotrader.strategies.breakout import BreakoutParams, BreakoutStrategy
+
+
+class _AlertStub:
+    def __init__(self):
+        self.msgs = []
+
+    def send(self, text, key=None):
+        self.msgs.append(text)
+        return True
+
+
+def _flatten_cfg(symbols):
+    return RiskConfig(trading_env="PAPER", min_confidence=0.5, max_order_notional=1e6,
+                      max_position_qty=10000, daily_loss_limit=500,
+                      max_gross_exposure=1e9, allowed_symbols=frozenset(symbols))
+
+
+def _flatten_engine(tmp_path, broker, symbols, alerts=None):
+    strat = BreakoutStrategy(BreakoutParams(symbol=next(iter(symbols)),
+                                            stop_loss_pct=0.05, take_profit_pct=0.10,
+                                            confidence=0.9))
+    return TradeEngine(broker, strat, _flatten_cfg(symbols), order_qty=1,
+                       audit_path=str(tmp_path / "a.jsonl"), alerts=alerts)
+
+
+def _sell_fills(broker, symbol=None):
+    return [f for f in broker._fills if f.side == "SELL"
+            and (symbol is None or f.symbol == symbol)]
+
+
+def test_flatten_respects_covered_call_floor(tmp_path):
+    b = SimBroker({"US.MARA": 20.0}, cash=100000.0)
+    b._positions["US.MARA"] = Position("US.MARA", 200, 19.0)                 # 200 shares
+    b._positions["US.MARA260724C17000"] = Position("US.MARA260724C17000", -1, 0.56)
+    eng = _flatten_engine(tmp_path, b, {"US.MARA"})
+    eng._flatten_all(b.get_account(), "halt-1")
+    sells = _sell_fills(b, "US.MARA")
+    assert [f.qty for f in sells] == [100]         # 200 - 1*100 pledged = 100 sold
+    assert b.get_account().position_qty("US.MARA") == 100   # cover retained
+
+
+def test_flatten_fully_pledged_long_is_skipped(tmp_path):
+    b = SimBroker({"US.MARA": 20.0}, cash=100000.0)
+    b._positions["US.MARA"] = Position("US.MARA", 100, 19.0)                 # 100 shares
+    b._positions["US.MARA260724C17000"] = Position("US.MARA260724C17000", -1, 0.56)
+    eng = _flatten_engine(tmp_path, b, {"US.MARA"})
+    eng._flatten_all(b.get_account(), "halt-2")
+    assert _sell_fills(b) == []                      # nothing sold — all pledged
+    assert b.get_account().position_qty("US.MARA") == 100
+
+
+def test_flatten_skips_long_option_leg_and_alerts(tmp_path):
+    b = SimBroker({"US.MARA": 20.0}, cash=100000.0)
+    b._positions["US.MARA"] = Position("US.MARA", 100, 19.0)
+    b._positions["US.MARA260821P12000"] = Position("US.MARA260821P12000", 1, 1.32)  # long put
+    alerts = _AlertStub()
+    eng = _flatten_engine(tmp_path, b, {"US.MARA"}, alerts=alerts)
+    eng._flatten_all(b.get_account(), "halt-3")
+    assert {f.symbol for f in _sell_fills(b)} == {"US.MARA"}   # equity sold, option not
+    assert len(alerts.msgs) == 1 and "US.MARA260821P12000" in alerts.msgs[0]
+
+
+def test_flatten_lists_short_option_legs_in_alert(tmp_path):
+    b = SimBroker({"US.MARA": 20.0}, cash=100000.0)
+    b._positions["US.MARA"] = Position("US.MARA", 300, 19.0)                 # 300 shares
+    b._positions["US.MARA260724C17000"] = Position("US.MARA260724C17000", -2, 0.56)
+    alerts = _AlertStub()
+    eng = _flatten_engine(tmp_path, b, {"US.MARA"}, alerts=alerts)
+    eng._flatten_all(b.get_account(), "halt-4")
+    assert [f.qty for f in _sell_fills(b, "US.MARA")] == [100]   # 300 - 2*100 = 100 sold
+    assert len(alerts.msgs) == 1 and "US.MARA260724C17000" in alerts.msgs[0]
 
 
 class _LossBroker(SimBroker):

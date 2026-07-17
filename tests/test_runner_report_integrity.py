@@ -35,10 +35,11 @@ class _AcctStub:
         return self._quotes.get(symbol)
 
 
-def _runner(db, broker, sleeps):
+def _runner(db, broker, sleeps, owned_only=False):
     return SessionRunner(engine=None, broker=broker, db=db, gate=None,
                           scheduler=None, watchdog=None, clock=None,
-                          sleep=sleeps.append, loop_interval=5.0)
+                          sleep=sleeps.append, loop_interval=5.0,
+                          owned_only=owned_only)
 
 
 def test_record_perf_retries_then_records_real_gross(tmp_path):
@@ -65,6 +66,41 @@ def test_record_perf_records_null_gross_when_never_resolved(tmp_path):
     row = db._conn.execute(
         "SELECT gross_exposure FROM performance").fetchone()
     assert row[0] is None
+    db.close()
+
+
+def _seed_trade(db, symbol):
+    db.record_trade(client_order_id=f"at-{symbol}", symbol=symbol, side="BUY", qty=1,
+                    order_type="MARKET", limit_price=None, broker_order_id="b1",
+                    state="FILLED")
+
+
+def test_record_perf_shared_excludes_foreign_unrealized(tmp_path):
+    """SHARED (Gap B): the unrealized mark must scope to AutoTrader's own book —
+    a foreign position (no trades row) must not contribute to unrealized_pnl."""
+    db = DB(str(tmp_path / "r.db"))
+    _seed_trade(db, "US.MARA")                              # owned; US.JEPI is not
+    br = _AcctStub(fail_times=0,
+                   loaded_positions=[Position("US.MARA", 100, 13.0),
+                                     Position("US.JEPI", 5, 50.0)],
+                   quotes={"US.MARA": 13.60, "US.JEPI": 55.0})
+    _runner(db, br, [], owned_only=True)._record_perf()
+    row = db._conn.execute("SELECT unrealized_pnl FROM performance").fetchone()
+    assert abs(row[0] - 60.0) < 1e-6           # MARA only: 100*(13.60-13.00); JEPI excluded
+    db.close()
+
+
+def test_record_perf_sole_still_marks_everything(tmp_path):
+    """SOLE regression guard: without ownership scoping, both positions count."""
+    db = DB(str(tmp_path / "r.db"))
+    _seed_trade(db, "US.MARA")
+    br = _AcctStub(fail_times=0,
+                   loaded_positions=[Position("US.MARA", 100, 13.0),
+                                     Position("US.JEPI", 5, 50.0)],
+                   quotes={"US.MARA": 13.60, "US.JEPI": 55.0})
+    _runner(db, br, [], owned_only=False)._record_perf()
+    row = db._conn.execute("SELECT unrealized_pnl FROM performance").fetchone()
+    assert abs(row[0] - 85.0) < 1e-6           # 60 (MARA) + 25 (JEPI)
     db.close()
 
 

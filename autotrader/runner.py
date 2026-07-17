@@ -89,8 +89,15 @@ class SessionRunner:
 
     def _compute_unrealized(self, snap) -> float:
         """Σ qty × (current_quote − avg_cost) over open positions, marked from live
-        quotes (shared with the engine risk check so the two cannot drift)."""
-        return unrealized_from_quotes(snap.positions, self._broker.get_quote)
+        quotes (shared with the engine risk check so the two cannot drift).
+
+        SHARED (Gap B): scope the mark to AutoTrader's own book so a foreign
+        position (SNP bot / manual) never pollutes our unrealized P&L."""
+        positions = snap.positions
+        if self._owned_only and self._db is not None:
+            owned = self._db.owned_symbols()
+            positions = [p for p in positions if p.symbol in owned]
+        return unrealized_from_quotes(positions, self._broker.get_quote)
 
     def _compute_realized(self) -> "float | None":
         rows = self._db._conn.execute(

@@ -97,7 +97,7 @@ export FUTU_ACC_ID=<your SIMULATE acc_id>
 | `RISK_LIMIT_ORDERS_ENABLED` | `false` | When enabled, entries/rebalance/option legs submit as capped marketable limits instead of plain MARKET orders (trailing-stop exits are unaffected). Rejected at config-load if both order caps below are `0`. **Off by default; Stage-3 flag — see `CUTOVER.md`.** |
 | `RISK_ORDER_CAP_BPS` / `RISK_ORDER_CAP_TICKS` | `0` / `0` | Cap = `max(order_cap_bps/1e4 * price, order_cap_ticks * tick)` through the touch. At least one must be nonzero if `RISK_LIMIT_ORDERS_ENABLED=true`. |
 | `RISK_ESCALATION_DWELL_SECONDS` | `20.0` | Seconds given to each limit-escalation stage (initial capped LIMIT, then the re-peg) before it's judged resting and escalation advances to the next stage. |
-| `RISK_ACCOUNT_OWNERSHIP` | `SOLE` | `SOLE` = today's behavior — sweep/flatten/report the whole account. `SHARED` = every account-wide operation (stop reconcile, cancel-all, flatten, ground-truth sync) scopes to AutoTrader's own tracked book only, because this account is shared with an independent SNP trading bot (`com.bot.trading`, separate repo). **`RISK_TRADING_ENV=LIVE` + `RISK_ACCOUNT_OWNERSHIP=SHARED` is structurally refused** at config-load time — live money never runs with the scoped-down posture. |
+| `RISK_ACCOUNT_OWNERSHIP` | `SOLE` | `SOLE` = today's behavior — sweep/flatten/report the whole account. `SHARED` = every account-wide operation (stop reconcile, cancel-all, flatten, ground-truth sync) scopes to AutoTrader's own tracked book only, because this account is shared with an independent SNP trading bot (`com.bot.trading`, separate repo). **`RISK_TRADING_ENV=LIVE` + `RISK_ACCOUNT_OWNERSHIP=SHARED` is structurally refused** at config-load time — live money never runs with the scoped-down posture. **Current paper setup: `SHARED`** (the account carries the SNP bot's + manual trades). |
 | `RISK_SIGNALS_ENABLED` | `true` | Gates whether the webhook/file-drop signal inbox is consumed at all — `false` skips constructing the `SignalInbox` entirely, leaving the internal strategy + stops + halts running. This is the **Stage-1 cutover flag** in the live rollout (`CUTOVER.md`): Stage 1 sets it `0` so the first live session runs on the internal strategy alone. |
 
 > **Partial fill (`OVERLAY_RESIDUAL_LONG`):** multi-leg overlays submit the long leg first. If a later (short) leg fails after the long has filled, the engine returns `OVERLAY_RESIDUAL_LONG` and leaves the long-only position in place — it is never a naked short. There is no automatic unwind; the residual is risk-defined by the long premium.
@@ -316,6 +316,19 @@ RUN_LIVE=1 python3 -m pytest tests/test_moomoo_broker_live.py
 | Webhook returns **413** | Body exceeds `AUTOTRADER_WEBHOOK_MAX_BODY`. Send a smaller payload or raise the cap. |
 | Webhook **202** but no trade | Working as designed — the webhook only enqueues. The trade happens on the trader's next healthy poll, inside 09:45–15:30 ET, if it clears the risk core. Check the trader log / `inbox/processed/` and `inbox/rejected/`. |
 | `unlock_trade` requested | Never done programmatically. Unlock manually in the OpenD GUI. |
+| Reports/P&L include symbols the bot never traded (e.g. dividend ETFs) | Foreign fills ingested while `RISK_ACCOUNT_OWNERSHIP=SOLE` before the account was shared. Set `SHARED` (blocks all future foreign ingestion via the `at-` client-order-id filter), then one-time purge the already-ingested rows (below). |
+| Halt-flatten left option legs open (`⚠ halt-flatten left N option leg(s)…`) | By design (P0b): a flatten never submits option legs as equity SELLs, and never sells shares pledged to a covered call (those underlyings clamp to 0 and are skipped). Close the listed legs manually in the OpenD GUI. The 4 over-written underlyings (2 short calls vs 100 shares) always clamp to 0 on a halt. |
+
+### One-time purge of foreign fills (run with the trader stopped)
+
+```bash
+cp ~/.autotrader.db ~/.autotrader.db.bak-$(date +%Y%m%d)                     # backup first
+sqlite3 ~/.autotrader.db "SELECT count(*) FROM fills WHERE symbol NOT IN (SELECT DISTINCT symbol FROM trades);"
+sqlite3 ~/.autotrader.db "CREATE TABLE IF NOT EXISTS fills_foreign AS SELECT * FROM fills WHERE symbol NOT IN (SELECT DISTINCT symbol FROM trades);
+DELETE FROM fills WHERE symbol NOT IN (SELECT DISTINCT symbol FROM trades);"
+```
+
+Reversible: `sqlite3 ~/.autotrader.db "INSERT INTO fills SELECT * FROM fills_foreign;"`. Foreign `positions` rows self-heal on the first `SHARED` sync. Ceiling: a foreign fill in a symbol AutoTrader *also* trades is indistinguishable and is not purged — `SHARED` only prevents future foreign ingestion.
 
 ---
 

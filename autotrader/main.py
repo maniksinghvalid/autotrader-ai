@@ -16,7 +16,8 @@ from autotrader import books
 from autotrader.broker import Broker
 from autotrader.config import RiskConfig, load_risk_config
 from autotrader.day_pnl import unrealized_from_quotes
-from autotrader.domain import BrokerError, OrderRequest, OrderState, Signal
+from autotrader.domain import (BrokerError, OrderRequest, OrderState, Signal,
+                               is_option_symbol)
 from autotrader.reporting.pnl import realized_from_fills
 from autotrader.rebalance import compute_plan
 from autotrader.risk_check import evaluate as risk_evaluate, RiskAction
@@ -859,24 +860,51 @@ class TradeEngine:
         return "REBALANCED"
 
     def _flatten_all(self, snapshot, round_id: str) -> None:
-        """Liquidate every long position through the audited path. Called BEFORE
+        """Liquidate every equity long through the audited path. Called BEFORE
         the halt flag is set, so the SELLs are not blocked by the halt guard.
+
         SHARED (V11, C6): a position AutoTrader never traded (the SNP bot's) is
-        left alone — flatten only ever touches our own tracked book."""
-        from autotrader.rebalance import RebalanceTrade
+        left alone — flatten only ever touches our own tracked book.
+
+        P0b: option legs are NEVER submitted as equity SELLs (they need proper
+        CLOSE orders that O4 doesn't build yet) — they are collected and surfaced
+        in an operator alert. Equity SELLs are clamped by the covered-call floor
+        so a flatten can never strip shares out from under a short call and leave
+        it naked (same reservation as rebalance)."""
+        from autotrader.rebalance import RebalanceTrade, SHARES_PER_CONTRACT
         owned = None
         if self._cfg.account_ownership == "SHARED" and self._db is not None:
             owned = self._db.owned_symbols()
+        left_open_legs = []
         for p in snapshot.positions:
-            if p.qty <= 0:
-                continue
             if owned is not None and p.symbol not in owned:
                 logger.info("flatten: foreign position %s left alone (SHARED)", p.symbol)
                 continue
+            if is_option_symbol(p.symbol):
+                if p.qty != 0:                 # long puts/calls AND short calls/puts
+                    left_open_legs.append(p.symbol)
+                continue
+            if p.qty <= 0:
+                continue
+            # Never sell shares pledged to a covered call (rebalance.py covered floor).
+            floor = snapshot.short_option_contracts(p.symbol, "CALL") * SHARES_PER_CONTRACT
+            qty = min(p.qty, max(0, p.qty - floor))
+            if qty <= 0:
+                logger.warning("flatten: %s fully pledged to short calls "
+                               "(%d shares reserved) — not sold", p.symbol, p.qty)
+                continue
+            if qty < p.qty:
+                logger.info("flatten: %s reserving %d shares for short-call cover",
+                            p.symbol, p.qty - qty)
             price = self._b.get_quote(p.symbol) or p.avg_price
-            trade = RebalanceTrade(p.symbol, "SELL", p.qty, "TRIM", 0)
+            trade = RebalanceTrade(p.symbol, "SELL", qty, "TRIM", 0)
             res = self.submit_rebalance_order(trade, price, round_id)
-            logger.info("flatten %s qty=%d -> %s", p.symbol, p.qty, res.action)
+            logger.info("flatten %s qty=%d -> %s", p.symbol, qty, res.action)
+        if left_open_legs and self._alerts is not None:
+            self._alerts.send(
+                f"⚠ halt-flatten left {len(left_open_legs)} option leg(s) open: "
+                f"{', '.join(sorted(left_open_legs))} — close manually",
+                key=f"halt-legs:{round_id}")
 
     def cancel_working_orders(self) -> None:
         """SOLE: whole-account cancel (today's behavior). SHARED: cancel only
