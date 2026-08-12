@@ -1,8 +1,14 @@
-"""Stateless N-day breakout strategy. Pure: (price, position, ref_high) -> Signal | None.
-Enters long only on a new N-day high (price > ref_high); the reference high is computed
-by BreakoutReference and passed in — the strategy never fetches data. Exits on stop /
-target via the shared helper. Fail-safe: ref_high None (no data) => NO entry, never
-buy-at-open (CLAUDE.md: explicit stop + target; no state between ticks)."""
+"""Stateless pullback (mean-reversion) strategy. Pure:
+(price, position, ref_low, sma) -> Signal | None.
+
+Buys dips within an uptrend: enters long only when price is at/below the
+M-day reference low (or a depth below the SMA — the reference computation
+belongs to the caller, like BreakoutReference does for breakout) AND the
+regime filter holds (price above the R-day SMA). The high-win-rate shape:
+small take-profit vs. the stop, many small winners, occasional larger
+losers. Exits on stop / target via the shared helper. Fail-safe: ref_low or
+sma None (no data) => NO entry (CLAUDE.md: explicit stop + target; no state
+between ticks)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,7 +19,7 @@ from autotrader.strategies.exits import manage_long_exit
 
 
 @dataclass(frozen=True)
-class BreakoutParams:
+class PullbackParams:
     symbol: str
     stop_loss_pct: float
     take_profit_pct: float
@@ -28,23 +34,22 @@ class BreakoutParams:
             raise ValueError("confidence must be in [0,1]")
 
 
-class BreakoutStrategy:
-    def __init__(self, params: BreakoutParams):
+class PullbackStrategy:
+    def __init__(self, params: PullbackParams):
         self.p = params
 
     def evaluate(self, price: float, position: Optional[Position],
-                 ref_high: Optional[float] = None,
+                 ref_low: Optional[float] = None,
                  sma: Optional[float] = None) -> Optional[Signal]:
         held = position.qty if position else 0
         if held > 0:
             return manage_long_exit(self.p.symbol, price, position,
                                     self.p.stop_loss_pct, self.p.take_profit_pct,
                                     self.p.confidence)
-        # Flat: enter ONLY on a confirmed breakout. No reference => no entry.
-        # Optional regime gate: when an sma is supplied, the breakout must also
-        # occur above it (sma=None keeps historical behavior byte-identical).
-        if (held == 0 and ref_high is not None and price > ref_high
-                and (sma is None or price > sma)):
+        # Flat: buy the dip ONLY in an uptrend. Missing either reference => no entry.
+        if (held == 0 and sma is not None and price > sma
+                and ref_low is not None and price <= ref_low):
             return Signal(self.p.symbol, "BUY", self.p.confidence,
-                          f"breakout: {price} > {self.p.symbol} high {ref_high}")
+                          f"pullback: {price} <= {self.p.symbol} ref low {ref_low} "
+                          f"in uptrend (> sma {sma})")
         return None
