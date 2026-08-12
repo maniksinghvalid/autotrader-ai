@@ -17,3 +17,9 @@ AUTOTRADER_WEBHOOK_MAX_BODY=65536
 # runner behaves exactly as without it). Create one at:
 #   https://api.slack.com/messaging/webhooks
 AUTOTRADER_SLACK_WEBHOOK_URL=
+
+# Massive API (formerly Polygon.io) key for historical OHLCV data used by the
+# backtesting engine (python -m autotrader.backtest — see docs/BACKTESTING.md).
+# Not needed for live/paper trading. A fully cached backtest run needs no key
+# at all — this is only read on a cache miss.
+MASSIVE_API_KEY=YOUR_API_KEY_HERE

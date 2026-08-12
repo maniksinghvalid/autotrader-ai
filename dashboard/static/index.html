@@ -100,6 +100,13 @@
     <div id="fillsWrap"></div>
   </div>
 
+  <div class="panel">
+    <h2>Backtests <span id="btCount" class="count"></span>
+      <button id="btRefreshBtn" style="margin-left:auto;padding:2px 8px;font-size:11px;">↻</button>
+    </h2>
+    <div id="backtestsWrap" class="empty">Loading…</div>
+  </div>
+
   <footer>
     Read-only view · paper trading by default · last updated <span id="lastUpdated">—</span>
   </footer>
@@ -240,6 +247,43 @@
       </tr></thead><tbody>${rows}</tbody></table>`;
   }
 
+  function fmtPct(v) {
+    if (v === null || v === undefined || isNaN(v)) return "—";
+    return (Number(v) * 100).toFixed(2) + "%";
+  }
+
+  function renderBacktests(runs) {
+    $("btCount").textContent = runs.length ? `(${runs.length})` : "";
+    if (!runs.length) { $("backtestsWrap").innerHTML = `<div class="empty">No saved backtest runs.</div>`; return; }
+    const rows = runs.map(r => {
+      const ret = Number(r.total_return) || 0;
+      return `<tr>
+        <td class="sym"><a href="/backtests/${encodeURIComponent(r.run_id)}/report.html"
+             target="_blank" rel="noopener" style="color:var(--accent)">${r.run_id}</a></td>
+        <td>${new Date(r.mtime * 1000).toLocaleString()}</td>
+        <td class="${signClass(ret)}">${fmtPct(ret)}</td>
+        <td>${r.sharpe === null || r.sharpe === undefined ? "—" : Number(r.sharpe).toFixed(2)}</td>
+        <td>${fmtPct(r.max_drawdown)}</td>
+        <td>${r.trade_count === null || r.trade_count === undefined ? "—" : r.trade_count}</td>
+        <td>${fmtMoney(r.final_value)}</td>
+      </tr>`;
+    }).join("");
+    $("backtestsWrap").innerHTML =
+      `<table><thead><tr>
+        <th class="sym">Run</th><th class="sym">Saved</th><th>Return</th>
+        <th>Sharpe</th><th>Max DD</th><th>Trades</th><th>Final Value</th>
+      </tr></thead><tbody>${rows}</tbody></table>`;
+  }
+
+  async function loadBacktests() {
+    try {
+      const data = await fetchJSON("/api/backtests");
+      renderBacktests(data.runs || []);
+    } catch (e) {
+      $("backtestsWrap").innerHTML = `<div class="empty">Could not load backtests: ${e.message || e}</div>`;
+    }
+  }
+
   function renderPanelErrors(errors) {
     if (!errors || !Object.keys(errors).length) { $("topError").innerHTML = ""; return; }
     const items = Object.entries(errors).map(([k, v]) => `<b>${k}:</b> ${v}`).join("<br>");
@@ -320,9 +364,11 @@
     try { await loadAccounts(); } catch (e) { /* surfaced on refresh */ }
     await refresh();
     scheduleLoop();
+    loadBacktests();   // loaded once on demand, not part of the polling loop
   }
 
   $("refreshBtn").addEventListener("click", refresh);
+  $("btRefreshBtn").addEventListener("click", loadBacktests);
   $("accountSelect").addEventListener("change", function () {
     const opt = this.options[this.selectedIndex];
     currentAcc = { acc_id: opt.value, market: opt.getAttribute("data-market") };

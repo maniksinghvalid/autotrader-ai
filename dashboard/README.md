@@ -1,7 +1,10 @@
 # AutoTrader — Operations Dashboard
 
 A read-only, live-refreshing web view of your Moomoo **paper trading** account:
-account summary, positions, open orders, and today's fills.
+account summary, positions, open orders, and today's fills. It also includes a
+**Backtests** tab that lists and links to saved `python -m autotrader.backtest`
+runs (see [docs/BACKTESTING.md](../docs/BACKTESTING.md)) — pure local file
+serving, no OpenD needed for that tab.
 
 It is a thin presentation layer. All Moomoo access is delegated to the vendored
 `skills/moomooapi` scripts, which run their own environment checks, set
@@ -49,9 +52,11 @@ cp config/dashboard.config.example config/dashboard.config
 | `refresh_seconds`    | 30      | Keep ≥ 20s to respect Moomoo's 10-refresh-per-30s limit |
 | `opend_ready_timeout`| 30      | Startup OpenD readiness poll budget |
 | `preferred_market`   | US      | Market chosen when an account has several |
+| `backtest_dir`       | `~/.autotrader/backtest_runs` | Root the Backtests tab scans; matches the backtest CLI's default `--out-dir` |
 
 Env overrides: `DASHBOARD_PORT`, `DASHBOARD_REFRESH_SECONDS`,
-`DASHBOARD_OPEND_TIMEOUT`, `DASHBOARD_PREFERRED_MARKET`, `DASHBOARD_HOST`.
+`DASHBOARD_OPEND_TIMEOUT`, `DASHBOARD_PREFERRED_MARKET`, `DASHBOARD_HOST`,
+`DASHBOARD_BACKTEST_DIR`.
 
 ## Run
 

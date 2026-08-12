@@ -27,3 +27,6 @@ env/
 plan/
 state.md
 docs/routinesignal-options.json
+
+# Backtest output written with an explicit --out-dir inside the repo
+.autotrader/

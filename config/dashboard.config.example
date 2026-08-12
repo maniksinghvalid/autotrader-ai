@@ -11,5 +11,8 @@
   "_opend_note": "Seconds the startup health check will poll OpenD (exponential backoff) before reporting it is not ready.",
 
   "preferred_market": "US",
-  "_market_note": "Market used to query an account when several are authorized (US / HK / CN / SG / HKCC)."
+  "_market_note": "Market used to query an account when several are authorized (US / HK / CN / SG / HKCC).",
+
+  "backtest_dir": "~/.autotrader/backtest_runs",
+  "_backtest_dir_note": "Root the dashboard's read-only Backtests tab scans for saved python -m autotrader.backtest runs. Matches that CLI's default --out-dir root. Override with DASHBOARD_BACKTEST_DIR."
 }

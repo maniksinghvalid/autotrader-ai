@@ -78,6 +78,7 @@ def load_config():
         "opend_ready_timeout": 30,    # seconds to wait for OpenD on startup
         "preferred_market": "US",     # used to pick a market from trdmarket_auth
         "trd_env": "SIMULATE",        # paper by default; never auto-promoted
+        "backtest_dir": "~/.autotrader/backtest_runs",   # python -m autotrader.backtest output root
     }
     cfg_path = os.path.join(REPO_ROOT, "config", "dashboard.config")
     if os.path.isfile(cfg_path):
@@ -97,6 +98,7 @@ def load_config():
         "refresh_seconds": "DASHBOARD_REFRESH_SECONDS",
         "opend_ready_timeout": "DASHBOARD_OPEND_TIMEOUT",
         "preferred_market": "DASHBOARD_PREFERRED_MARKET",
+        "backtest_dir": "DASHBOARD_BACKTEST_DIR",
     }
     for key, env in env_map.items():
         val = os.getenv(env)
@@ -357,6 +359,63 @@ def api_snapshot():
         market = market or accts[0]["market"]
 
     return jsonify(build_snapshot(acc_id, market))
+
+
+# ------------------------------------------------------------------
+# Backtests — read-only viewer over saved `python -m autotrader.backtest`
+# runs. Pure local file reads: no OpenD gate, no broker access, no
+# subprocess. Serves only the fixed artifact filenames a backtest run
+# writes; anything else, or any run_id that would escape the runs root,
+# is refused.
+# ------------------------------------------------------------------
+BACKTEST_ARTIFACT_NAMES = {"report.html", "summary.json", "trades.csv", "equity_curve.csv"}
+
+
+def _backtest_runs_dir():
+    return os.path.abspath(os.path.expanduser(str(CONFIG["backtest_dir"])))
+
+
+@app.route("/api/backtests")
+def api_backtests():
+    root = _backtest_runs_dir()
+    runs = []
+    if os.path.isdir(root):
+        for name in os.listdir(root):
+            run_dir = os.path.join(root, name)
+            summary_path = os.path.join(run_dir, "summary.json")
+            if not os.path.isdir(run_dir) or not os.path.isfile(summary_path):
+                continue
+            try:
+                with open(summary_path, "r", encoding="utf-8") as fh:
+                    summary = json.load(fh)
+            except (OSError, ValueError) as exc:
+                logger.warning("backtests: could not read %s: %s", summary_path, exc)
+                continue
+            portfolio = summary.get("portfolio", {}) if isinstance(summary, dict) else {}
+            runs.append({
+                "run_id": name,
+                "mtime": os.path.getmtime(run_dir),
+                "total_return": portfolio.get("total_return"),
+                "sharpe": portfolio.get("sharpe"),
+                "max_drawdown": portfolio.get("max_drawdown"),
+                "trade_count": portfolio.get("trade_count"),
+                "final_value": portfolio.get("final_value"),
+            })
+    runs.sort(key=lambda r: r["mtime"], reverse=True)
+    return jsonify({"runs": runs})
+
+
+@app.route("/backtests/<run_id>/<filename>")
+def api_backtest_artifact(run_id, filename):
+    if filename not in BACKTEST_ARTIFACT_NAMES or run_id in ("", ".", ".."):
+        return jsonify({"error": "not found"}), 404
+    root = os.path.realpath(_backtest_runs_dir())
+    run_dir = os.path.realpath(os.path.join(root, run_id))
+    if run_dir != root and not run_dir.startswith(root + os.sep):
+        return jsonify({"error": "not found"}), 404
+    if not os.path.isfile(os.path.join(run_dir, filename)):
+        return jsonify({"error": "not found"}), 404
+    return send_from_directory(run_dir, filename)
 
 
 def main():
