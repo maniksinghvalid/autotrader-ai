@@ -88,3 +88,14 @@ def test_recent_high_none_when_unset():
     from autotrader.sim_broker import SimBroker
     b = SimBroker(quotes={"US.AAPL": 100.0})
     assert b.recent_high("US.AAPL", 20) is None
+
+
+def test_recent_low_and_sma_injected_dicts():
+    """recent_lows / smas mirror the recent_highs injection pattern; a symbol
+    absent from the dict returns None (fail-safe: no entry)."""
+    b = SimBroker(quotes={"US.AAPL": 100.0},
+                  recent_lows={"US.AAPL": 95.5}, smas={"US.AAPL": 98.0})
+    assert b.recent_low("US.AAPL", 15) == 95.5
+    assert b.sma("US.AAPL", 100) == 98.0
+    assert b.recent_low("US.MSFT", 15) is None
+    assert b.sma("US.MSFT", 100) is None

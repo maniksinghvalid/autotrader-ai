@@ -443,3 +443,65 @@ def test_recent_high_max_count_covers_full_window():
     # lookback=10: the 10 most-recent completed bars are 19-28,
     # highs = 119, 120, 121, 122, 123, 124, 125, 126, 127, 128 -> max 128.0
     assert b.recent_high("US.AAPL", 10) == 128.0
+
+
+# ---------------------------------------------------------------------------
+# recent_low / sma — offline tests (share _completed_daily_values with
+# recent_high, so the windowing/forming-bar behavior is pinned once above and
+# these pin the per-field reductions)
+# ---------------------------------------------------------------------------
+
+def test_recent_low_returns_min_completed_low():
+    """Min of completed lows; today's forming bar excluded."""
+    from datetime import date
+    today_str = date.today().strftime("%Y-%m-%d")
+    b = MoomooBroker.__new__(MoomooBroker)
+    b._c = _FakeCommon()
+    rows = [
+        _Row(time_key="2026-06-28", low=95.0),
+        _Row(time_key="2026-06-29", low=93.0),
+        _Row(time_key=today_str, low=1.0),   # forming bar — must be excluded
+    ]
+    b._quote = _FakeKlineQuoteCtx(ret=0, data=_DF(rows))
+    assert b.recent_low("US.AAPL", 2) == 93.0
+
+
+def test_sma_returns_mean_of_completed_closes():
+    from datetime import date
+    today_str = date.today().strftime("%Y-%m-%d")
+    b = MoomooBroker.__new__(MoomooBroker)
+    b._c = _FakeCommon()
+    rows = [
+        _Row(time_key="2026-06-27", close=100.0),
+        _Row(time_key="2026-06-28", close=102.0),
+        _Row(time_key="2026-06-29", close=104.0),
+        _Row(time_key=today_str, close=999.0),   # forming bar — excluded
+    ]
+    b._quote = _FakeKlineQuoteCtx(ret=0, data=_DF(rows))
+    assert b.sma("US.AAPL", 3) == pytest.approx(102.0)
+
+
+def test_recent_low_and_sma_none_on_insufficient_bars():
+    b = MoomooBroker.__new__(MoomooBroker)
+    b._c = _FakeCommon()
+    rows = [_Row(time_key="2026-06-29", low=93.0, close=100.0)]
+    b._quote = _FakeKlineQuoteCtx(ret=0, data=_DF(rows))
+    assert b.recent_low("US.AAPL", 3) is None
+    assert b.sma("US.AAPL", 3) is None
+
+
+def test_recent_low_and_sma_none_on_failure_paths():
+    """Non-OK ret and raised exceptions both fail safe to None (no entry)."""
+    b = MoomooBroker.__new__(MoomooBroker)
+    b._c = _FakeCommon()
+    b._quote = _FakeKlineQuoteCtx(ret=1, data="rate limited")
+    assert b.recent_low("US.AAPL", 5) is None
+    assert b.sma("US.AAPL", 5) is None
+
+    class _RaisingQuoteCtx:
+        def request_history_kline(self, code, **kwargs):
+            raise ConnectionError("OpenD socket dropped")
+
+    b._quote = _RaisingQuoteCtx()
+    assert b.recent_low("US.AAPL", 5) is None
+    assert b.sma("US.AAPL", 5) is None

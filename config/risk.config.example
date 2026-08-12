@@ -108,13 +108,43 @@ RISK_ACCOUNT_OWNERSHIP=SOLE
 # skips SignalInbox construction entirely and logs the disabled state.
 RISK_SIGNALS_ENABLED=true
 
-# --- Internal breakout strategy exit params (V9) ---
+# --- Internal strategy selection + exit params (V9) ---
 # Env-driven per CLAUDE.md (no hardcoded risk values outside config).
 # Defaults below match the values that were previously hardcoded in main().
 # Risk-limit CHANGES require explicit human review (CLAUDE.md).
+# STRATEGY_KIND selects the internal strategy: breakout (default) | pullback.
+# Whichever kind runs, its entries claim under the same internal book token
+# ('BREAKOUT' in strategy_claims) — only one internal strategy runs per process.
+STRATEGY_KIND=breakout
 STRATEGY_STOP_LOSS_PCT=0.05
 STRATEGY_TAKE_PROFIT_PCT=0.10
 STRATEGY_CONFIDENCE=0.7
+# Breakout: N-day-high entry window.
+# ENTRY_BREAKOUT_LOOKBACK=20
+# Pullback: M-day-low dip trigger + R-day SMA uptrend gate.
+# ENTRY_PULLBACK_LOOKBACK=15
+# REGIME_SMA=100
+
+# Validated sweep config (2026-08-12, out-of-sample 2025-01-01..2026-08-12 on
+# CLOV,DIVO,IAU,IBIT,NIO,O,SCHF: 81.5% win rate, 0.93% max DD, PF 2.00,
+# 65 trades — historical simulation, NOT a guarantee). To adopt it, uncomment
+# and human-review each value:
+#   STRATEGY_KIND=pullback
+#   ENTRY_PULLBACK_LOOKBACK=15
+#   REGIME_SMA=100
+#   STRATEGY_STOP_LOSS_PCT=0.05
+#   STRATEGY_TAKE_PROFIT_PCT=0.02
+# NOTE: the validated run had NO trailing stop. RISK_TRAILING_STOP_PCT=5.0
+# above WILL layer trailing exits on top of the pullback's SL/TP — behavior
+# the sweep did not measure. Set RISK_TRAILING_STOP_PCT=0 to match the
+# validated config exactly (human-review risk change).
+
+# --- Backtesting (python -m autotrader.backtest) ---
+# The backtester defaults its strategy knobs (ENTRY_BREAKOUT_LOOKBACK,
+# STRATEGY_*, RISK_TRAILING_STOP_PCT, ORDER_QTY — all already above) from
+# these SAME env vars, so a sourced risk.config gives config parity with
+# production. The Massive API key lives in config/secure.config, not here.
+# See docs/BACKTESTING.md.
 
 # --- AUTOTRADER_* operational knobs (non-secret; not RISK_* because they are
 # not risk limits, but still config-only per CLAUDE.md) ---

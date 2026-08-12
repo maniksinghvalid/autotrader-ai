@@ -21,11 +21,13 @@ Deterministic paper-trading core for Moomoo OpenD. Architecture and rationale:
    export ENTRY_BREAKOUT_LOOKBACK=20                 # N-day breakout window (default)
    python -m autotrader.main
    ```
-   **Breakout entry.** The internal strategy enters only on a new N-day high
-   (`price > the highest high of the last ENTRY_BREAKOUT_LOOKBACK completed daily
-   bars`). If the daily klines can't be fetched it does **not** enter — it never
-   buys at open. Set `STRATEGY_ENABLED=false` to run the engine on webhook +
-   rebalance signals only. See RUNBOOK.md for full config.
+   **Internal strategy.** `STRATEGY_KIND=breakout` (default) enters only on a
+   new N-day high (`price > the highest high of the last ENTRY_BREAKOUT_LOOKBACK
+   completed daily bars`); `STRATEGY_KIND=pullback` enters only on a dip to the
+   `ENTRY_PULLBACK_LOOKBACK`-day low inside a `REGIME_SMA`-day-SMA uptrend. If
+   the daily klines can't be fetched neither kind enters — never a buy-at-open.
+   Set `STRATEGY_ENABLED=false` to run the engine on webhook + rebalance signals
+   only. See RUNBOOK.md for full config.
 
 LIVE is intentionally blocked in v1 (`main()` refuses non-PAPER). Live is a later,
 separately-validated phase requiring the two-key unlock.

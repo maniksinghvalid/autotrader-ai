@@ -102,7 +102,8 @@ CREATE TABLE IF NOT EXISTS engine_state (
 
 CREATE TABLE IF NOT EXISTS strategy_claims (
     symbol     TEXT PRIMARY KEY,   -- normalized code, e.g. US.NIO
-    origin     TEXT NOT NULL,      -- 'BREAKOUT' (spec D4: only breakout claims stored)
+    origin     TEXT NOT NULL,      -- 'BREAKOUT' = the internal book's token for ANY
+                                   -- STRATEGY_KIND (one internal strategy per process)
     claimed_at TEXT NOT NULL,
     session_id TEXT
 );

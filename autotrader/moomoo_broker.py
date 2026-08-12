@@ -123,45 +123,66 @@ class MoomooBroker(Broker):
             return None
         return (bid, ask)
 
-    def recent_high(self, symbol: str, lookback: int):
-        """Highest daily high over the last `lookback` COMPLETED trading days
-        (today's forming bar excluded), or None on data failure / insufficient
-        history. Quote-context call — no trade refresh tokens. Fail-safe: None."""
+    def _completed_daily_values(self, symbol: str, need: int, field: str,
+                                label: str):
+        """Last `need` COMPLETED daily values of `field` (today's forming bar
+        excluded), oldest-first, or None on data failure / insufficient
+        history. Shared fetch path for recent_high / recent_low / sma so the
+        windowing math and forming-bar exclusion cannot drift between them.
+        Quote-context call — no trade refresh tokens. Fail-safe: None."""
         from datetime import date as _date, timedelta
-        lookback = max(1, int(lookback))
+        need = max(1, int(need))
         today = _date.today()
-        start = (today - timedelta(days=lookback * 2 + 10)).strftime("%Y-%m-%d")
+        start = (today - timedelta(days=need * 2 + 10)).strftime("%Y-%m-%d")
         end = today.strftime("%Y-%m-%d")
         try:
             # max_count must cover the ENTIRE [start, end] window: the SDK returns
             # bars in ascending (oldest-first) order and truncates from the front
-            # when max_count is smaller than the window.  Using just lookback+5 would
+            # when max_count is smaller than the window.  Using just need+5 would
             # drop the most-recent bars — the ones we actually want.
             ret, data, _pk = self._quote.request_history_kline(
                 symbol, start=start, end=end, ktype=self._c.KLType.K_DAY,
-                autype=self._c.AuType.QFQ, max_count=2 * lookback + 15)
+                autype=self._c.AuType.QFQ, max_count=2 * need + 15)
         except Exception as e:                       # never raise into the loop
-            logger.warning("recent_high %s: kline request raised: %s", symbol, e)
+            logger.warning("%s %s: kline request raised: %s", label, symbol, e)
             return None
         if not self._ok(ret) or self._c.is_empty(data):
-            logger.info("recent_high %s: ret=%s %s", symbol, ret,
+            logger.info("%s %s: ret=%s %s", label, symbol, ret,
                         data if isinstance(data, str) else "empty")
             return None
-        highs = []
+        values = []
         for i in range(len(data)):
             row = data.iloc[i]
             tk = str(self._c.safe_get(row, "time_key", "time", default=""))[:10]
             if tk == end:                            # exclude today's forming bar
                 continue
-            h = self._c.safe_float(self._c.safe_get(row, "high", default=0))
-            if h > 0:
-                highs.append(h)
-        completed = highs[-lookback:]
-        if len(completed) < lookback:                # insufficient history -> no entry
-            logger.info("recent_high %s: only %d/%d completed bars", symbol,
-                        len(completed), lookback)
+            v = self._c.safe_float(self._c.safe_get(row, field, default=0))
+            if v > 0:
+                values.append(v)
+        completed = values[-need:]
+        if len(completed) < need:                    # insufficient history -> no entry
+            logger.info("%s %s: only %d/%d completed bars", label, symbol,
+                        len(completed), need)
             return None
-        return max(completed)
+        return completed
+
+    def recent_high(self, symbol: str, lookback: int):
+        """Highest daily high over the last `lookback` COMPLETED trading days,
+        or None (fail-safe: no entry)."""
+        completed = self._completed_daily_values(symbol, lookback, "high", "recent_high")
+        return max(completed) if completed is not None else None
+
+    def recent_low(self, symbol: str, lookback: int):
+        """Lowest daily low over the last `lookback` COMPLETED trading days,
+        or None (fail-safe: no entry)."""
+        completed = self._completed_daily_values(symbol, lookback, "low", "recent_low")
+        return min(completed) if completed is not None else None
+
+    def sma(self, symbol: str, window: int):
+        """Simple moving average of the last `window` COMPLETED daily closes,
+        or None (fail-safe: no entry)."""
+        completed = self._completed_daily_values(symbol, window, "close", "sma")
+        return sum(completed) / len(completed) if completed else None
 
     def get_option_chain(self, underlying: str, right,
                          dte_min: int = 0, dte_max: int = 100000):  # pragma: no cover — live OpenD

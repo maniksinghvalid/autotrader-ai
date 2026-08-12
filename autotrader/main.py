@@ -57,6 +57,50 @@ def select_strategy_symbol(allowed_symbols, override: "Optional[str]" = None,
     return sorted(allowed_symbols)[0]
 
 
+def build_internal_strategy(symbol: str):
+    """Construct the internal strategy selected by STRATEGY_KIND plus a factory
+    for its daily-reference provider: (strategy, make_ref(broker), description).
+
+    Env knobs (CLAUDE.md: no hardcoded risk values outside config):
+      STRATEGY_KIND            breakout (default) | pullback
+      ENTRY_BREAKOUT_LOOKBACK  breakout N-day-high window (default 20)
+      ENTRY_PULLBACK_LOOKBACK  pullback M-day-low window (default 15)
+      REGIME_SMA               pullback uptrend-gate SMA window (default 100)
+      STRATEGY_STOP_LOSS_PCT / STRATEGY_TAKE_PROFIT_PCT / STRATEGY_CONFIDENCE
+                               shared exit/confidence params (both kinds)
+
+    An unknown kind raises ValueError — the caller refuses to start rather than
+    guess in the order path. Whichever kind is selected, entries claim under
+    books.ORIGIN_BREAKOUT: the claim is the internal book's ownership token,
+    not a strategy label, and only one internal strategy runs per process."""
+    import os
+    kind = os.getenv("STRATEGY_KIND", "breakout").strip().lower()
+    stop_loss = float(os.getenv("STRATEGY_STOP_LOSS_PCT", "0.05"))
+    take_profit = float(os.getenv("STRATEGY_TAKE_PROFIT_PCT", "0.10"))
+    confidence = float(os.getenv("STRATEGY_CONFIDENCE", "0.7"))
+    if kind == "breakout":
+        from autotrader.strategies.breakout import BreakoutParams, BreakoutStrategy
+        from autotrader.breakout_reference import BreakoutReference
+        lookback = int(os.getenv("ENTRY_BREAKOUT_LOOKBACK", "20"))
+        strat = BreakoutStrategy(BreakoutParams(
+            symbol=symbol, stop_loss_pct=stop_loss, take_profit_pct=take_profit,
+            confidence=confidence))
+        return (strat, lambda broker: BreakoutReference(broker, lookback),
+                f"BREAKOUT lookback={lookback}")
+    if kind == "pullback":
+        from autotrader.strategies.pullback import PullbackParams, PullbackStrategy
+        from autotrader.breakout_reference import PullbackReference
+        low_lookback = int(os.getenv("ENTRY_PULLBACK_LOOKBACK", "15"))
+        sma_window = int(os.getenv("REGIME_SMA", "100"))
+        strat = PullbackStrategy(PullbackParams(
+            symbol=symbol, stop_loss_pct=stop_loss, take_profit_pct=take_profit,
+            confidence=confidence))
+        return (strat, lambda broker: PullbackReference(broker, low_lookback, sma_window),
+                f"PULLBACK low_lookback={low_lookback} regime_sma={sma_window}")
+    raise ValueError(f"STRATEGY_KIND={kind!r} is not a known internal strategy "
+                     "(expected 'breakout' or 'pullback')")
+
+
 @dataclass(frozen=True)
 class TickResult:
     action: str
@@ -72,12 +116,17 @@ class TradeEngine:
                  escalation_sleep=None,
                  alert_url: "Optional[str]" = None, alert_post=None,
                  session_id: "Optional[str]" = None, snapshot_cache_ticks: int = 1,
-                 strategy_enabled: bool = True, breakout_ref=None,
+                 strategy_enabled: bool = True, strategy_ref=None,
                  alerts: "Optional[AlertSink]" = None):
         self._b = broker
         self._strat = strategy
         self._strategy_enabled = strategy_enabled
-        self._breakout_ref = breakout_ref
+        # Daily-cached reference provider for the internal strategy's entry
+        # inputs (BreakoutReference or PullbackReference). Its kwargs(symbol)
+        # returns exactly the keyword args this strategy's evaluate() expects,
+        # keeping tick() strategy-shape-agnostic. None => no entry references
+        # (ThresholdStrategy engines, most unit tests).
+        self._strategy_ref = strategy_ref
         self._cfg = cfg
         self._qty = order_qty
         self._router = OrderRouter(broker, audit_path=audit_path)
@@ -164,8 +213,12 @@ class TradeEngine:
         if pos is not None and pos.qty > 0 and self._db is not None:
             if not books.is_breakout_claimed(symbol, self._db.get_claims()):
                 return TickResult(books.SKIP_POSITION_NOT_OWNED, symbol)
-        ref_high = self._breakout_ref.high(symbol) if self._breakout_ref is not None else None
-        signal = self._strat.evaluate(price=price, position=pos, ref_high=ref_high)
+        # Entry references come from the strategy's own daily-cached provider
+        # as evaluate() keyword args (ref_high for breakout, ref_low+sma for
+        # pullback, {} for threshold). Held positions exit via the shared
+        # manage_long_exit path regardless of the entry kwargs.
+        ref_kwargs = self._strategy_ref.kwargs(symbol) if self._strategy_ref is not None else {}
+        signal = self._strat.evaluate(price=price, position=pos, **ref_kwargs)
         if signal is None:
             return TickResult("NO_SIGNAL")
         # Routing decisions never run on cached data: drop the cache and
@@ -1009,7 +1062,7 @@ class TradeEngine:
 
 def build_engine(broker, strategy, cfg, *, order_qty: int, audit_path: str,
                  db=None, entry_gate=None, alert_url=None,
-                 strategy_enabled: bool = True, breakout_ref=None,
+                 strategy_enabled: bool = True, strategy_ref=None,
                  alerts=None) -> TradeEngine:
     """Production TradeEngine wiring — the ONE place real time enters the
     engine: time.sleep for the hedge fill-poll and the escalation dwell (unit
@@ -1022,7 +1075,7 @@ def build_engine(broker, strategy, cfg, *, order_qty: int, audit_path: str,
         broker, strategy, cfg, order_qty=order_qty, audit_path=audit_path,
         db=db, entry_gate=entry_gate, alert_url=alert_url,
         strategy_enabled=strategy_enabled,
-        breakout_ref=breakout_ref,
+        strategy_ref=strategy_ref,
         hedge_confirm_sleep=_time.sleep,
         escalation_sleep=_time.sleep,
         snapshot_cache_ticks=int(_os.getenv("AUTOTRADER_SNAPSHOT_CACHE_TICKS", "6")),
@@ -1064,22 +1117,16 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
         return 1
 
     from autotrader.moomoo_broker import MoomooBroker
-    from autotrader.strategies.breakout import BreakoutParams, BreakoutStrategy
-    from autotrader.breakout_reference import BreakoutReference
     symbol = select_strategy_symbol(cfg.allowed_symbols, os.getenv("STRATEGY_SYMBOL"))
-    lookback = int(os.getenv("ENTRY_BREAKOUT_LOOKBACK", "20"))
     strategy_enabled = os.getenv("STRATEGY_ENABLED", "true").strip().lower() in (
         "1", "true", "yes", "on")
-    # Strategy exit params are env-driven (CLAUDE.md: no hardcoded risk values
-    # outside config); defaults match the prior hardcoded values so behavior
-    # is unchanged unless an operator explicitly overrides (V9).
-    strat = BreakoutStrategy(BreakoutParams(
-        symbol=symbol,
-        stop_loss_pct=float(os.getenv("STRATEGY_STOP_LOSS_PCT", "0.05")),
-        take_profit_pct=float(os.getenv("STRATEGY_TAKE_PROFIT_PCT", "0.10")),
-        confidence=float(os.getenv("STRATEGY_CONFIDENCE", "0.7"))))
-    logger.info("internal strategy: BREAKOUT symbol=%s lookback=%d enabled=%s",
-                symbol, lookback, strategy_enabled)
+    try:
+        strat, make_ref, kind_desc = build_internal_strategy(symbol)
+    except ValueError as e:
+        logger.error("refusing to start: %s", e)
+        return 2
+    logger.info("internal strategy: %s symbol=%s enabled=%s",
+                kind_desc, symbol, strategy_enabled)
     # New default audit path (V9/V11): distinct from the vendored skills'/SNP
     # bot's ~/.futu_trade_audit.jsonl, so the two audit trails never collide
     # on a shared paper account. The old file is left in place for the skills.
@@ -1087,7 +1134,7 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
         os.getenv("AUTOTRADER_AUDIT_PATH", "~/.autotrader_trade_audit.jsonl"))
     broker = MoomooBroker()
     broker.connect()
-    breakout_ref = BreakoutReference(broker, lookback)
+    strategy_ref = make_ref(broker)
     db_path = os.path.expanduser(os.getenv("AUTOTRADER_DB_PATH", "~/.autotrader.db"))
     from autotrader.db import DB  # lazy import: keeps tests that skip main() SDK-free
     db = DB(db_path)
@@ -1107,7 +1154,7 @@ def main() -> int:  # pragma: no cover — live entrypoint, covered by manual ru
                           order_qty=int(os.getenv("ORDER_QTY", "1")),
                           audit_path=audit, db=db, entry_gate=gate,
                           alert_url=slack_url,
-                          strategy_enabled=strategy_enabled, breakout_ref=breakout_ref,
+                          strategy_enabled=strategy_enabled, strategy_ref=strategy_ref,
                           alerts=alerts)
     owned_only = cfg.account_ownership == "SHARED"
     watchdog = Watchdog(

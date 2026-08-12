@@ -24,7 +24,7 @@ def _engine(broker, tick_sleeper):
     ref = BreakoutReference(broker, lookback=20)
     return TradeEngine(broker, strat, _cfg(), order_qty=10,
                        audit_path="/tmp/at-test-audit.jsonl",
-                       hedge_confirm_sleep=tick_sleeper, breakout_ref=ref)
+                       hedge_confirm_sleep=tick_sleeper, strategy_ref=ref)
 
 
 def test_stop_attaches_after_async_entry_fill(tmp_path):

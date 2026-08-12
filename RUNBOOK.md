@@ -116,7 +116,10 @@ export FUTU_ACC_ID=<your SIMULATE acc_id>
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `STRATEGY_KIND` | `breakout` | Selects the internal strategy: `breakout` (N-day-high entry) or `pullback` (dip to the M-day low inside an R-day-SMA uptrend; validated by the 2026-08-12 sweep). Unknown values refuse to start. Either kind claims symbols under the same internal book token (`BREAKOUT`). |
 | `ENTRY_BREAKOUT_LOOKBACK` | `20` | N completed daily bars for the breakout high. Higher = rarer, stronger breakouts. |
+| `ENTRY_PULLBACK_LOOKBACK` | `15` | Pullback only: M completed daily bars whose lowest low is the dip trigger. |
+| `REGIME_SMA` | `100` | Pullback only: SMA window for the uptrend gate — no entries while price is below it. |
 | `STRATEGY_ENABLED` | `true` | Internal strategy on/off. `false` = the engine acts only on webhook signals + rebalance. |
 | `STRATEGY_SYMBOL` | *(unset → lexicographically smallest of `RISK_ALLOWED_SYMBOLS`)* | Pins the internal strategy to one symbol (must also be in `RISK_ALLOWED_SYMBOLS`). |
 | `STRATEGY_STOP_LOSS_PCT` | `0.05` | Internal breakout strategy's stop-loss, as a fraction below entry. |
@@ -139,8 +142,9 @@ export FUTU_ACC_ID=<your SIMULATE acc_id>
 | `AUTOTRADER_WEBHOOK_MAX_BODY` | `65536` (64 KiB) | Max accepted request body size; larger requests get **413** (see §12). |
 | `AUTOTRADER_WEBHOOK_FRESHNESS_MIN` | `15` | Max age (minutes, both past and future) accepted for a webhook payload's `timestamp` before rejection. |
 | `OPEND_READY_TIMEOUT` | `30` | Seconds to wait for OpenD readiness at startup before halting. |
+| `MASSIVE_API_KEY` | *(required for backtest data fetches; unused otherwise)* | Massive API (formerly Polygon.io) key for `python -m autotrader.backtest` historical data. Lives in `config/secure.config`. See `docs/BACKTESTING.md`. |
 
-> ℹ️ **Breakout entry.** The internal strategy enters only on a new N-day high (`price > the highest high of the last ENTRY_BREAKOUT_LOOKBACK completed daily bars`). If the daily klines can't be fetched, it does **not** enter — it never buys at open. Entries still fire only inside the 09:45–15:30 ET window (§5).
+> ℹ️ **Internal strategy entries.** With `STRATEGY_KIND=breakout` (default) the strategy enters only on a new N-day high (`price > the highest high of the last ENTRY_BREAKOUT_LOOKBACK completed daily bars`). With `STRATEGY_KIND=pullback` it enters only on a dip (`price <= the lowest low of the last ENTRY_PULLBACK_LOOKBACK completed daily bars`) while in an uptrend (`price > the REGIME_SMA-day SMA of completed closes`). Either way, if the daily klines can't be fetched the strategy does **not** enter — it never buys at open. Entries still fire only inside the 09:45–15:30 ET window (§5).
 
 ---
 

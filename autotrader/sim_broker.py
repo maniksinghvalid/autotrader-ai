@@ -17,6 +17,8 @@ class SimBroker(Broker):
                  auto_fill: bool = True, option_chains=None,
                  spread_bps: float = 0.0, slippage_bps: float = 0.0,
                  recent_highs: Optional[Dict[str, float]] = None,
+                 recent_lows: Optional[Dict[str, float]] = None,
+                 smas: Optional[Dict[str, float]] = None,
                  fill_latency_ticks: int = 0, cancel_latency_ticks: int = 0):
         self._quotes = dict(quotes)
         self._cash = cash
@@ -40,6 +42,8 @@ class SimBroker(Broker):
         # simulate Moomoo paper-trading's rejection of that type).
         self.reject_order_types: set = set()
         self._recent_highs = dict(recent_highs or {})
+        self._recent_lows = dict(recent_lows or {})
+        self._smas = dict(smas or {})
         # V1 async rig: 0 = synchronous (today's behavior). >0 = orders ack
         # SUBMITTED and fill/cancel only after N tick_market() calls; within a
         # tick, fills mature BEFORE cancels (the live cancel-race, deterministic).
@@ -64,6 +68,12 @@ class SimBroker(Broker):
 
     def recent_high(self, symbol: str, lookback: int) -> Optional[float]:
         return self._recent_highs.get(symbol)
+
+    def recent_low(self, symbol: str, lookback: int) -> Optional[float]:
+        return self._recent_lows.get(symbol)
+
+    def sma(self, symbol: str, window: int) -> Optional[float]:
+        return self._smas.get(symbol)
 
     def _touch(self, symbol: str):
         """Simulated (bid, ask) around the stored reference. Half-spread each side."""

@@ -310,7 +310,7 @@ def test_breakout_tick_places_on_new_high(tmp_path):
     strat = BreakoutStrategy(BreakoutParams("US.AAPL", 0.05, 0.10, 0.7))
     ref = BreakoutReference(b, 20, today_fn=lambda: date(2026, 7, 2))
     eng = TradeEngine(broker=b, strategy=strat, cfg=_cfg(), order_qty=10,
-                      audit_path=str(tmp_path / "audit.jsonl"), breakout_ref=ref)
+                      audit_path=str(tmp_path / "audit.jsonl"), strategy_ref=ref)
     assert eng.tick().action == "ORDER_PLACED"
     assert b.get_account().position_qty("US.AAPL") == 10
 
@@ -324,7 +324,7 @@ def test_breakout_tick_no_signal_below_high(tmp_path):
     strat = BreakoutStrategy(BreakoutParams("US.AAPL", 0.05, 0.10, 0.7))
     ref = BreakoutReference(b, 20, today_fn=lambda: date(2026, 7, 2))
     eng = TradeEngine(broker=b, strategy=strat, cfg=_cfg(), order_qty=10,
-                      audit_path=str(tmp_path / "audit.jsonl"), breakout_ref=ref)
+                      audit_path=str(tmp_path / "audit.jsonl"), strategy_ref=ref)
     assert eng.tick().action == "NO_SIGNAL"
 
 
@@ -336,7 +336,7 @@ def test_breakout_tick_no_entry_without_reference(tmp_path):
     strat = BreakoutStrategy(BreakoutParams("US.AAPL", 0.05, 0.10, 0.7))
     ref = BreakoutReference(b, 20, today_fn=lambda: date(2026, 7, 2))
     eng = TradeEngine(broker=b, strategy=strat, cfg=_cfg(), order_qty=10,
-                      audit_path=str(tmp_path / "audit.jsonl"), breakout_ref=ref)
+                      audit_path=str(tmp_path / "audit.jsonl"), strategy_ref=ref)
     assert eng.tick().action == "NO_SIGNAL"   # fail-safe: no ref, no buy
 
 
@@ -359,6 +359,79 @@ def test_build_engine_forwards_strategy_flags(tmp_path):
                                              confidence=0.7))
     eng = build_engine(b, strat, _cfg(), order_qty=1,
                        audit_path=str(tmp_path / "a.jsonl"),
-                       strategy_enabled=False, breakout_ref="SENTINEL")
+                       strategy_enabled=False, strategy_ref="SENTINEL")
     assert eng._strategy_enabled is False
-    assert eng._breakout_ref == "SENTINEL"
+    assert eng._strategy_ref == "SENTINEL"
+
+
+def test_pullback_tick_enters_on_dip_in_uptrend(tmp_path):
+    from autotrader.strategies.pullback import PullbackParams, PullbackStrategy
+    from autotrader.breakout_reference import PullbackReference
+    from datetime import date
+    b = SimBroker(quotes={"US.AAPL": 95.0}, cash=100000.0,
+                  recent_lows={"US.AAPL": 95.5}, smas={"US.AAPL": 90.0})
+    strat = PullbackStrategy(PullbackParams("US.AAPL", 0.05, 0.02, 0.7))
+    ref = PullbackReference(b, 15, 100, today_fn=lambda: date(2026, 8, 12))
+    eng = TradeEngine(broker=b, strategy=strat, cfg=_cfg(), order_qty=10,
+                      audit_path=str(tmp_path / "audit.jsonl"), strategy_ref=ref)
+    assert eng.tick().action == "ORDER_PLACED"
+    assert b.get_account().position_qty("US.AAPL") == 10
+
+
+def test_pullback_tick_no_signal_in_downtrend(tmp_path):
+    """Deep dip but price below the SMA (downtrend) -> regime gate closed."""
+    from autotrader.strategies.pullback import PullbackParams, PullbackStrategy
+    from autotrader.breakout_reference import PullbackReference
+    from datetime import date
+    b = SimBroker(quotes={"US.AAPL": 85.0}, cash=100000.0,
+                  recent_lows={"US.AAPL": 95.5}, smas={"US.AAPL": 90.0})
+    strat = PullbackStrategy(PullbackParams("US.AAPL", 0.05, 0.02, 0.7))
+    ref = PullbackReference(b, 15, 100, today_fn=lambda: date(2026, 8, 12))
+    eng = TradeEngine(broker=b, strategy=strat, cfg=_cfg(), order_qty=10,
+                      audit_path=str(tmp_path / "audit.jsonl"), strategy_ref=ref)
+    assert eng.tick().action == "NO_SIGNAL"
+
+
+def test_pullback_tick_no_entry_without_references(tmp_path):
+    """Missing ref data (no recent_lows/smas injected) -> fail-safe no entry."""
+    from autotrader.strategies.pullback import PullbackParams, PullbackStrategy
+    from autotrader.breakout_reference import PullbackReference
+    from datetime import date
+    b = SimBroker(quotes={"US.AAPL": 95.0}, cash=100000.0)
+    strat = PullbackStrategy(PullbackParams("US.AAPL", 0.05, 0.02, 0.7))
+    ref = PullbackReference(b, 15, 100, today_fn=lambda: date(2026, 8, 12))
+    eng = TradeEngine(broker=b, strategy=strat, cfg=_cfg(), order_qty=10,
+                      audit_path=str(tmp_path / "audit.jsonl"), strategy_ref=ref)
+    assert eng.tick().action == "NO_SIGNAL"
+
+
+def test_build_internal_strategy_kind_selection(monkeypatch):
+    from autotrader.main import build_internal_strategy
+    from autotrader.strategies.breakout import BreakoutStrategy
+    from autotrader.strategies.pullback import PullbackStrategy
+    from autotrader.breakout_reference import BreakoutReference, PullbackReference
+
+    monkeypatch.delenv("STRATEGY_KIND", raising=False)
+    strat, make_ref, desc = build_internal_strategy("US.AAPL")
+    assert isinstance(strat, BreakoutStrategy)
+    b = SimBroker(quotes={})
+    assert isinstance(make_ref(b), BreakoutReference)
+    assert "BREAKOUT" in desc
+
+    monkeypatch.setenv("STRATEGY_KIND", "pullback")
+    monkeypatch.setenv("ENTRY_PULLBACK_LOOKBACK", "15")
+    monkeypatch.setenv("REGIME_SMA", "100")
+    monkeypatch.setenv("STRATEGY_TAKE_PROFIT_PCT", "0.02")
+    strat, make_ref, desc = build_internal_strategy("US.AAPL")
+    assert isinstance(strat, PullbackStrategy)
+    assert strat.p.take_profit_pct == 0.02
+    assert isinstance(make_ref(b), PullbackReference)
+    assert "PULLBACK" in desc and "15" in desc and "100" in desc
+
+
+def test_build_internal_strategy_unknown_kind_raises(monkeypatch):
+    import pytest
+    from autotrader.main import build_internal_strategy
+    monkeypatch.setenv("STRATEGY_KIND", "hodl")
+    with pytest.raises(ValueError, match="STRATEGY_KIND"):
+        build_internal_strategy("US.AAPL")
